@@ -1,0 +1,12 @@
+[filter "lfs"]
+	smudge = git-lfs smudge -- %f
+	process = git-lfs filter-process
+	required = true
+	clean = git-lfs clean -- %f
+[user]
+	name = ChiragAgg5k
+	email = 110609663+ChiragAgg5k@users.noreply.github.com
+[core]
+	askpass = git-gui--askpass
+[http]
+	postBuffer = 157286400
