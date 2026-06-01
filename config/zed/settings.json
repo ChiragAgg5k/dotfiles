@@ -1,0 +1,139 @@
+{
+  "cli_default_open_behavior": "existing_window",
+  "icon_theme": "Material Icon Theme",
+  "format_on_save": "off",
+  "completion_detail_alignment": "left",
+  "project_panel": {
+    "dock": "left"
+  },
+  "outline_panel": {
+    "dock": "right"
+  },
+  "collaboration_panel": {
+    "dock": "right"
+  },
+  "agent": {
+    "default_model": {
+      "effort": "medium",
+      "provider": "openai-subscribed",
+      "model": "gpt-5.5",
+      "enable_thinking": true
+    },
+    "tool_permissions": {
+      "default": "allow"
+    },
+    "dock": "right",
+    "favorite_models": [],
+    "model_parameters": []
+  },
+  "git_panel": {
+    "dock": "right"
+  },
+  "ui_font_size": 15.0,
+  "buffer_font_size": 12.0,
+  "git": {
+    "inline_blame": {
+      "enabled": false
+    }
+  },
+  "edit_predictions": {
+    "disabled_globs": [
+      "**/credentials.json",
+      "**/credentials.*.json",
+      "**/secret.json",
+      "**/secrets.json",
+      "**/*.key",
+      "**/*.pem",
+      "**/*.pfx",
+      "**/*.p12",
+      "**/*.crt",
+      "**/*.cer",
+      "**/id_rsa",
+      "**/id_dsa",
+      "**/.ssh/id_*"
+    ]
+  },
+  "agent_servers": {
+    "opencode": {
+      "type": "registry"
+    },
+    "claude-acp": {
+      "type": "registry"
+    },
+    "codex-acp": {
+      "type": "registry"
+    }
+  },
+  "base_keymap": "VSCode",
+  "theme": {
+    "mode": "system",
+    "light": "Ayu Light",
+    "dark": "Ayu Dark"
+  },
+  "context_servers": {
+    "posthog": {
+      "enabled": true,
+      "command": "/Users/chiragaggarwal/.nvm/versions/node/v22.16.0/bin/npx",
+      "args": [
+        "-y",
+        "mcp-remote@latest",
+        "https://mcp.posthog.com/sse",
+        "--header",
+        "Authorization:${POSTHOG_AUTH_HEADER}"
+      ],
+      "env": {
+        "POSTHOG_AUTH_HEADER": "Bearer phx_REPLACE_WITH_YOUR_POSTHOG_PERSONAL_API_KEY"
+      }
+    },
+    "playwright": {
+      "enabled": true,
+      "command": "/Users/chiragaggarwal/.nvm/versions/node/v22.16.0/bin/playwright-mcp",
+      "args": [],
+      "env": {}
+    },
+    "appwrite-docs": {
+      "enabled": true,
+      "command": "/Users/chiragaggarwal/.nvm/versions/node/v22.16.0/bin/npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://mcp-for-docs.appwrite.io"
+      ],
+      "env": {}
+    }
+  },
+  "lsp": {
+    "intelephense": {
+      "settings": {
+        "stubs": [
+          "apache", "bcmath", "bz2", "calendar", "com_dotnet", "Core", "ctype", "curl",
+          "date", "dba", "dom", "enchant", "exif", "FFI", "fileinfo", "filter", "fpm",
+          "ftp", "gd", "gettext", "gmp", "hash", "iconv", "imap", "intl", "json", "ldap",
+          "libxml", "mbstring", "mcrypt", "mysqli", "oci8", "odbc", "openssl", "pcntl",
+          "pcre", "PDO", "pdo_ibm", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "pgsql",
+          "Phar", "posix", "pspell", "readline", "Reflection", "session", "shmop",
+          "SimpleXML", "snmp", "soap", "sockets", "sodium", "SPL", "sqlite3", "standard",
+          "superglobals", "sysvmsg", "sysvsem", "sysvshm", "tidy", "tokenizer", "xml",
+          "xmlreader", "xmlrpc", "xmlwriter", "xsl", "Zend OPcache", "zip", "zlib",
+          "redis"
+        ]
+      }
+    }
+  },
+  "languages": {
+    "PHP": {
+      "language_servers": [
+        "!phpactor",
+        "..."
+      ]
+    },
+    "JSON": {
+      "format_on_save": "off",
+      "formatter": "language_server"
+    },
+    "JSONC": {
+      "format_on_save": "off",
+      "formatter": "language_server"
+    }
+  }
+}

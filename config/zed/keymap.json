@@ -1,0 +1,47 @@
+// Zed keymap
+//
+// For information on binding keys, see the Zed
+// documentation: https://zed.dev/docs/key-bindings
+//
+// To see the default key bindings run `zed: open default keymap`
+// from the command palette.
+[
+  {
+    "context": "Workspace",
+    "bindings": {
+      "cmd-r": "workspace::ToggleRightDock",
+      "cmd-e": "workspace::ToggleLeftDock",
+      "ctrl-`": "workspace::ToggleBottomDock",
+      "cmd-j": "terminal_panel::ToggleFocus"
+    },
+  },
+  {
+    "context": "Editor",
+    "bindings": {
+      "cmd-r": "workspace::ToggleRightDock",
+      "cmd-e": "workspace::ToggleLeftDock",
+      "ctrl-`": "workspace::ToggleBottomDock",
+      "cmd-j": "terminal_panel::ToggleFocus"
+    },
+  },
+  {
+    "context": "ProjectPanel",
+    "bindings": {
+      "cmd-r": "workspace::ToggleRightDock",
+      "cmd-e": "workspace::ToggleLeftDock"
+    },
+  },
+  {
+    "context": "AgentPanel",
+    "bindings": {
+      "cmd-r": "workspace::ToggleRightDock",
+      "cmd-e": "workspace::ToggleLeftDock"
+    },
+  },
+  {
+    "context": "Editor && vim_mode == insert",
+    "bindings": {
+      // "j k": "vim::NormalBefore"
+    },
+  },
+]

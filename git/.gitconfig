@@ -1,0 +1,31 @@
+# This is Git's per-user configuration file.
+[user]
+	name = Chirag Aggarwal
+	email = chiragaggarwal5k@gmail.com
+	signingkey = /Users/chiragaggarwal/.ssh/id_ed25519.pub
+# Please adapt and uncomment the following lines:
+#	name = Chirag Aggarwal
+#	email = chiragaggarwal@Chirags-MacBook-Pro.local
+[push]
+	autoSetupRemote = true
+[init]
+	defaultBranch = main
+[credential "https://github.com"]
+	helper = 
+	helper = !/opt/homebrew/bin/gh auth git-credential
+[credential "https://gist.github.com"]
+	helper = 
+	helper = !/opt/homebrew/bin/gh auth git-credential
+[gpg]
+	format = ssh
+[gpg "ssh"]
+	allowedSignersFile = /Users/chiragaggarwal/.config/git/allowed_signers
+[commit]
+	gpgsign = true
+[url "git@github.com:"]
+	insteadOf = https://github.com/
+[filter "lfs"]
+	clean = git-lfs clean -- %f
+	smudge = git-lfs smudge -- %f
+	process = git-lfs filter-process
+	required = true
