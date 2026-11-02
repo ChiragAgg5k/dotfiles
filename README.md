@@ -14,12 +14,22 @@ My personal macOS dotfiles — zsh, git, and a handful of app configs, wired up 
 │   └── .zprofile             # login-shell setup (Homebrew, OrbStack)
 ├── git/
 │   └── .gitconfig            # user, SSH commit signing, gh credential helper
-└── config/                   # everything under ~/.config
-    ├── wezterm/wezterm.lua   # terminal: theme, keybinds, pane workflow
-    ├── zed/                  # Zed editor: settings.json + keymap.json
-    ├── skhd/skhdrc           # hotkey daemon (WezTerm pane focus)
-    └── iterm2/pane-title.zsh # pane title with branch / PR status
+├── config/                   # everything under ~/.config
+│   ├── wezterm/wezterm.lua   # terminal: theme, keybinds, pane workflow
+│   ├── zed/                  # Zed editor: settings.json + keymap.json
+│   ├── skhd/skhdrc           # hotkey daemon (WezTerm pane focus)
+│   └── iterm2/pane-title.zsh # pane title with branch / PR status
+├── claude/                   # Claude Code: linked into ~/.claude
+│   ├── CLAUDE.md             # global agent instructions
+│   ├── settings.json         # hooks, plugins, marketplaces
+│   ├── hooks/                # PreToolUse guards (commit format, CI polling, merges, heavy runs)
+│   ├── agents/               # custom subagents
+│   └── skills/               # slash-command skills (linked one by one)
+└── bin/
+    └── pr-status             # PR/CI/review status for agents (~/.local/bin)
 ```
+
+Skills and agents are linked individually, so `~/.claude/skills` can also hold third-party and app-synced skills this repo doesn't track. `settings.local.json`, memory and session data stay local.
 
 ## Installation
 

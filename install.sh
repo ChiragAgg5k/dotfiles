@@ -42,7 +42,16 @@ LINKS=(
   "config/zed/keymap.json:.config/zed/keymap.json"
   "config/skhd/skhdrc:.config/skhd/skhdrc"
   "config/iterm2/pane-title.zsh:.config/iterm2/pane-title.zsh"
+  "claude/CLAUDE.md:.claude/CLAUDE.md"
+  "claude/settings.json:.claude/settings.json"
+  "bin/pr-status:.local/bin/pr-status"
 )
+
+# Claude Code hooks, agents and skills are linked one by one so ~/.claude/skills can also
+# hold third-party skills and app-synced ones that this repo doesn't track.
+for path in "$DOTFILES_DIR"/claude/hooks/* "$DOTFILES_DIR"/claude/agents/* "$DOTFILES_DIR"/claude/skills/*; do
+  [ -e "$path" ] && LINKS+=("${path#"$DOTFILES_DIR"/}:.${path#"$DOTFILES_DIR"/}")
+done
 
 info()  { printf '\033[34m•\033[0m %s\n' "$1"; }
 ok()    { printf '\033[32m✓\033[0m %s\n' "$1"; }

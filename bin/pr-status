@@ -1,0 +1,529 @@
+#!/usr/bin/env python3
+"""pr-status: one read-only report of a pull request's CI, review and merge state.
+
+Usage:
+  pr-status <pr>...                 one-shot report
+  pr-status <pr>... --wait          poll until something actionable happens
+  pr-status <pr> --json             machine-readable report
+
+<pr> is a URL, owner/repo#N, or N (with -R owner/repo, or the current repo).
+
+Exit codes: 0 green, 1 red, 2 blocked, 3 waiting, 4 error, 5 superseded (head moved while waiting).
+With several PRs the worst code wins (red > blocked > waiting > green).
+
+Never merges. Merging is a separate action that needs the user's approval.
+"""
+import argparse
+import json
+import re
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+REVIEW_BOTS = ('hansi-codes', 'greptile-apps', 'tenki-reviewer')
+PRIMARY_BOT = 'hansi-codes'
+INFRA_PATTERNS = re.compile(
+    r'lost communication with the server|BlobNotFound|runner has received a shutdown signal'
+    r'|The operation was canceled|No space left on device|exceeded the maximum execution time'
+    r'|rate limit|ECONNRESET|503 Service Unavailable|could not resolve host',
+    re.I,
+)
+FAILURE_START = re.compile(
+    r'There (was|were) \d+ (failure|error)|FAILURES!|ERRORS!|\berror TS\d+|^Error:|\bFAIL\b|Traceback|panicked at|\[ERROR\]',
+)
+STALE_EXTERNAL_SECONDS = 2 * 3600
+LOG_LINES = 30
+MAX_LOGS = 3
+
+GREEN, RED, BLOCKED, WAITING, ERROR, SUPERSEDED = 0, 1, 2, 3, 4, 5
+VERDICT_NAMES = {GREEN: 'green', RED: 'red', BLOCKED: 'blocked', WAITING: 'waiting', ERROR: 'error', SUPERSEDED: 'superseded'}
+SEVERITY = {RED: 5, BLOCKED: 4, ERROR: 3, WAITING: 2, SUPERSEDED: 1, GREEN: 0}
+
+QUERY = '''
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      number title url state isDraft headRefName headRefOid baseRefName
+      mergeable mergeStateStatus reviewDecision
+      baseRef { target { ... on Commit { oid statusCheckRollup { contexts(first: 100) { nodes {
+        __typename
+        ... on CheckRun { name conclusion status }
+        ... on StatusContext { context state }
+      } } } } } }
+      latestOpinionatedReviews(first: 20) { nodes { author { login } state submittedAt commit { oid } } }
+      reviews(last: 30) { nodes { author { login } state submittedAt commit { oid } } }
+      reviewThreads(first: 100) { nodes {
+        isResolved isOutdated path line
+        comments(first: 1) { nodes { author { login } body createdAt } }
+      } }
+      comments(last: 50) { nodes { author { login } updatedAt body } }
+      commits(last: 1) { nodes { commit {
+        oid committedDate
+        statusCheckRollup { contexts(first: 100) { totalCount nodes {
+          __typename
+          ... on CheckRun {
+            name status conclusion detailsUrl startedAt completedAt databaseId
+            isRequired(pullRequestNumber: $number)
+            checkSuite { workflowRun { databaseId workflow { name } } }
+          }
+          ... on StatusContext {
+            context state targetUrl createdAt
+            isRequired(pullRequestNumber: $number)
+          }
+        } } }
+      } } }
+    }
+  }
+}
+'''
+
+
+class GitHubError(Exception):
+    pass
+
+
+def gh(args: list[str]) -> str:
+    for attempt in range(3):
+        result = subprocess.run(['gh', *args], capture_output=True, text=True)
+        if result.returncode == 0:
+            return result.stdout
+        message = result.stderr.strip() or result.stdout.strip()
+        if re.search(r'error connecting|timeout|50[0234]|EOF|reset by peer', message, re.I) and attempt < 2:
+            time.sleep(3 * (attempt + 1))
+            continue
+        raise GitHubError(message)
+    raise GitHubError('unreachable')
+
+
+def now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def parse_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace('Z', '+00:00'))
+
+
+def age(value: str | None) -> str:
+    moment = parse_time(value)
+    if not moment:
+        return '-'
+    seconds = int((now() - moment).total_seconds())
+    if seconds < 90:
+        return f'{seconds}s'
+    if seconds < 5400:
+        return f'{seconds // 60}m'
+    return f'{seconds // 3600}h{(seconds % 3600) // 60:02d}m'
+
+
+def resolve_reference(reference: str, repository: str | None) -> tuple[str, str, int]:
+    match = re.match(r'https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)', reference)
+    if match:
+        return match.group(1), match.group(2), int(match.group(3))
+    match = re.match(r'([\w.-]+)/([\w.-]+)#(\d+)$', reference)
+    if match:
+        return match.group(1), match.group(2), int(match.group(3))
+    match = re.match(r'#?(\d+)$', reference)
+    if match:
+        if not repository:
+            repository = gh(['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner']).strip()
+        owner, name = repository.split('/', 1)
+        return owner, name, int(match.group(1))
+    raise GitHubError(f'cannot parse PR reference: {reference}')
+
+
+@dataclass
+class Check:
+    name: str
+    state: str  # pass, fail, pending, skipped, cancelled
+    required: bool
+    external: bool
+    started: str | None
+    url: str | None
+    job: int | None
+    workflow: str | None
+    label: str = ''  # new, infra, red-on-base, ignored, stale-external
+    step: str = ''
+    log: list[str] = field(default_factory=list)
+    rerunnable: bool = False
+
+
+def check_state(node: dict) -> str:
+    if node['__typename'] == 'StatusContext':
+        return {'SUCCESS': 'pass', 'PENDING': 'pending', 'EXPECTED': 'pending'}.get(node['state'], 'fail')
+    if node['status'] != 'COMPLETED':
+        return 'pending'
+    return {
+        'SUCCESS': 'pass', 'NEUTRAL': 'pass', 'SKIPPED': 'skipped',
+        'CANCELLED': 'cancelled', 'STALE': 'skipped',
+    }.get(node['conclusion'], 'fail')
+
+
+def base_failures(pull: dict) -> set[str]:
+    target = (pull.get('baseRef') or {}).get('target') or {}
+    rollup = target.get('statusCheckRollup') or {}
+    failed = set()
+    for node in (rollup.get('contexts') or {}).get('nodes', []):
+        if node['__typename'] == 'CheckRun':
+            if node['status'] == 'COMPLETED' and node['conclusion'] in ('FAILURE', 'TIMED_OUT', 'STARTUP_FAILURE'):
+                failed.add(node['name'])
+        elif node['state'] in ('FAILURE', 'ERROR'):
+            failed.add(node['context'])
+    return failed
+
+
+def base_count(pull: dict) -> int:
+    target = (pull.get('baseRef') or {}).get('target') or {}
+    rollup = target.get('statusCheckRollup') or {}
+    return len((rollup.get('contexts') or {}).get('nodes', []))
+
+
+def strip_log(line: str) -> str:
+    line = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', line)
+    return re.sub(r'^\d{4}-\d{2}-\d{2}T[\d:.]+Z ', '', line).rstrip()
+
+
+def failure_detail(owner: str, name: str, check: Check) -> None:
+    if not check.job:
+        return
+    repo = f'repos/{owner}/{name}'
+    try:
+        job = json.loads(gh(['api', f'{repo}/actions/jobs/{check.job}']))
+        failed_steps = [step['name'] for step in job.get('steps', []) if step.get('conclusion') == 'failure']
+        check.step = ', '.join(failed_steps)
+    except (GitHubError, json.JSONDecodeError):
+        pass
+    annotations = []
+    try:
+        annotations = json.loads(gh(['api', f'{repo}/check-runs/{check.job}/annotations']))
+    except (GitHubError, json.JSONDecodeError):
+        pass
+    messages = [a.get('message', '') for a in annotations if a.get('annotation_level') == 'failure']
+    try:
+        text = gh(['api', '--allow-escape-sequences', f'{repo}/actions/jobs/{check.job}/logs'])
+        lines = [strip_log(line) for line in text.splitlines()]
+        lines = [line for line in lines if line and not line.startswith('##[group]') and line != '##[endgroup]']
+        aggregate = [line for line in lines if line.startswith('##[error]Jobs did not pass')]
+        if aggregate:
+            check.label = 'aggregate'
+            check.log = [aggregate[-1].removeprefix('##[error]')]
+            return
+        anchor = max((i for i, line in enumerate(lines) if line.startswith('##[error]')), default=len(lines) - 1)
+        window = lines[max(0, anchor - 200):anchor + 1]
+        start = next((i for i, line in enumerate(window) if FAILURE_START.search(line)), max(0, len(window) - LOG_LINES))
+        check.log = window[max(0, start - 2):][:LOG_LINES]
+    except GitHubError as error:
+        check.log = [f'(log unavailable: {str(error).splitlines()[0][:160]})']
+    if INFRA_PATTERNS.search(' '.join(messages) + '\n'.join(check.log)):
+        check.label = 'infra'
+    if messages and not any(m in '\n'.join(check.log) for m in messages[:1]):
+        check.log = [f'annotation: {m.splitlines()[0][:200]}' for m in messages[:3]] + check.log
+
+
+def collect(owner: str, name: str, number: int, ignore: re.Pattern | None, logs: bool) -> dict:
+    data = json.loads(gh([
+        'api', 'graphql', '-f', f'query={QUERY}',
+        '-F', f'owner={owner}', '-F', f'name={name}', '-F', f'number={number}',
+    ]))
+    if data.get('errors'):
+        raise GitHubError(data['errors'][0].get('message', 'graphql error'))
+    pull = data['data']['repository']['pullRequest']
+    if pull['mergeable'] == 'UNKNOWN' and pull['state'] == 'OPEN':
+        for _ in range(3):
+            time.sleep(3)
+            again = json.loads(gh(['pr', 'view', str(number), '-R', f'{owner}/{name}', '--json', 'mergeable,mergeStateStatus']))
+            pull['mergeable'], pull['mergeStateStatus'] = again['mergeable'], again['mergeStateStatus']
+            if pull['mergeable'] != 'UNKNOWN':
+                break
+
+    head = pull['commits']['nodes'][0]['commit']
+    rollup = head.get('statusCheckRollup') or {'contexts': {'nodes': [], 'totalCount': 0}}
+    red_on_base = base_failures(pull)
+    checks: list[Check] = []
+    for node in rollup['contexts']['nodes']:
+        external = node['__typename'] == 'StatusContext'
+        run = ((node.get('checkSuite') or {}).get('workflowRun') or {})
+        check = Check(
+            name=node['context'] if external else node['name'],
+            state=check_state(node),
+            required=bool(node.get('isRequired')),
+            external=external,
+            started=node.get('createdAt') if external else node.get('startedAt'),
+            url=node.get('targetUrl') if external else node.get('detailsUrl'),
+            job=node.get('databaseId') if run.get('databaseId') else None,  # only Actions jobs have logs
+            workflow=(run.get('workflow') or {}).get('name'),
+        )
+        if check.state == 'fail':
+            if ignore and ignore.search(check.name):
+                check.label = 'ignored'
+            elif check.name in red_on_base:
+                check.label = 'red-on-base'
+            else:
+                check.label = 'new'
+        if check.state == 'cancelled':
+            check.label = 'infra'
+        if external and check.state == 'pending':
+            started = parse_time(check.started)
+            if started and (now() - started).total_seconds() > STALE_EXTERNAL_SECONDS:
+                check.label = 'stale-external'
+        check.rerunnable = bool(run.get('databaseId')) and check.state in ('fail', 'cancelled')
+        checks.append(check)
+
+    if logs:
+        failing = [c for c in checks if c.state == 'fail' and c.label in ('new', '')]
+        for check in failing[:MAX_LOGS]:
+            failure_detail(owner, name, check)
+
+    head_oid = head['oid']
+    reviews = [r for r in pull['latestOpinionatedReviews']['nodes'] if r['author']]
+    all_reviews = [r for r in pull['reviews']['nodes'] if r['author']]
+    bots = {}
+    for login in REVIEW_BOTS:
+        mine = [r for r in all_reviews if r['author']['login'] == login]
+        opinion = next((r for r in reviews if r['author']['login'] == login), None)
+        latest = mine[-1] if mine else None
+        check = next((c for c in checks if c.name.lower() == login.split('-')[0]), None)
+        summary = next(
+            (c for c in reversed(pull['comments']['nodes']) if c['author'] and c['author']['login'] == login and 'Tier' in c['body']),
+            None,
+        )
+        tier = None
+        if summary:
+            match = re.search(r'Tier\s+([SABCD])\b[^\n]*', summary['body'])
+            tier = match.group(0).strip(' #') if match else None
+        if not (mine or check or summary):
+            continue
+        state = (opinion or latest or {}).get('state')
+        reviewed = ((opinion or latest or {}).get('commit') or {}).get('oid')
+        bots[login] = {
+            'state': state,
+            'reviewedCommit': reviewed,
+            'onHead': reviewed == head_oid,
+            'check': check.state if check else None,
+            'tier': tier,
+            'approved': state == 'APPROVED' and reviewed == head_oid and (check is None or check.state == 'pass'),
+            'running': bool(check and check.state == 'pending'),
+        }
+
+    threads = []
+    for thread in pull['reviewThreads']['nodes']:
+        if thread['isResolved'] or thread['isOutdated']:
+            continue
+        first = (thread['comments']['nodes'] or [{}])[0]
+        threads.append({
+            'author': (first.get('author') or {}).get('login'),
+            'where': f"{thread['path']}:{thread['line'] or '?'}",
+            'text': (first.get('body') or '').strip().splitlines()[0][:140] if first.get('body') else '',
+        })
+
+    behind = None
+    if pull['state'] == 'OPEN':
+        try:
+            compare = json.loads(gh(['api', f"repos/{owner}/{name}/compare/{pull['baseRefName']}...{head_oid}", '--jq', '{behind_by}']))
+            behind = compare['behind_by']
+        except (GitHubError, json.JSONDecodeError, KeyError):
+            pass
+
+    return {
+        'repo': f'{owner}/{name}', 'number': number, 'title': pull['title'], 'url': pull['url'],
+        'state': pull['state'], 'draft': pull['isDraft'], 'head': head_oid, 'headPushed': head['committedDate'],
+        'branch': pull['headRefName'], 'base': pull['baseRefName'], 'behind': behind,
+        'mergeable': pull['mergeable'], 'mergeState': pull['mergeStateStatus'], 'reviewDecision': pull['reviewDecision'],
+        'checks': checks, 'expected': base_count(pull), 'bots': bots, 'threads': threads,
+        'changesRequested': [r['author']['login'] for r in reviews if r['state'] == 'CHANGES_REQUESTED'],
+    }
+
+
+def verdict(report: dict) -> tuple[int, list[str]]:
+    reasons: list[str] = []
+    checks = report['checks']
+    if report['state'] == 'MERGED':
+        return GREEN, ['already merged']
+    if report['state'] == 'CLOSED':
+        return BLOCKED, ['closed']
+    conflicted = report['mergeable'] == 'CONFLICTING' or report['mergeState'] == 'DIRTY'
+    new_failures = [c for c in checks if c.state == 'fail' and c.label in ('new', 'aggregate')]
+    if new_failures:
+        reasons = [f'{len(new_failures)} failing: ' + ', '.join(c.name for c in new_failures[:6])]
+        if conflicted:
+            reasons.append('merge conflicts with ' + report['base'])
+        return RED, reasons
+    if conflicted:
+        reasons.append('merge conflicts with ' + report['base'])
+    if report['draft']:
+        reasons.append('draft')
+    primary = report['bots'].get(PRIMARY_BOT)
+    pushed = parse_time(report['headPushed'])
+    pending = [c for c in checks if c.state == 'pending' and c.label != 'stale-external']
+    if primary and not primary['onHead'] and not primary['running'] and (pending or (pushed and (now() - pushed).total_seconds() < 1800)):
+        primary['running'] = True  # a push since the last review: expect a re-review before judging
+    reviewing = bool(primary and primary['running'])
+    # While the bot re-reviews the new head, its earlier verdict and threads are not final.
+    requested = [login for login in report['changesRequested'] if not (reviewing and login == PRIMARY_BOT)]
+    threads = [t for t in report['threads'] if not (reviewing and t['author'] == PRIMARY_BOT)]
+    if requested:
+        reasons.append('changes requested by ' + ', '.join(requested))
+    if primary and not primary['approved'] and not primary['running']:
+        if primary['state'] == 'APPROVED' and not primary['onHead']:
+            reasons.append(f"{PRIMARY_BOT} approval is for {(primary['reviewedCommit'] or '?')[:8]}, not head")
+        elif primary['state'] != 'APPROVED':
+            reasons.append(f"{PRIMARY_BOT}: {primary['state'] or 'no review'}" + (f" ({primary['tier']})" if primary['tier'] else ''))
+    if threads:
+        reasons.append(f"{len(threads)} unresolved thread(s)")
+    if report['mergeState'] == 'BLOCKED' and report['reviewDecision'] == 'REVIEW_REQUIRED' and not reviewing:
+        reasons.append('review required')
+    if reasons:
+        return BLOCKED, reasons
+    registered = len(checks)
+    fresh = pushed and (now() - pushed).total_seconds() < 600
+    if pending:
+        reasons.append(f'{len(pending)} pending: ' + ', '.join(c.name for c in pending[:5]))
+    if fresh and report['expected'] and registered < report['expected'] * 0.8:
+        reasons.append(f"only {registered}/{report['expected']} checks registered (pushed {age(report['headPushed'])} ago)")
+    if primary and primary['running']:
+        reasons.append(f'{PRIMARY_BOT} review of head pending' if not primary['onHead'] else f'{PRIMARY_BOT} review running')
+    if report['mergeable'] == 'UNKNOWN':
+        reasons.append('mergeability still computing')
+    if reasons:
+        return WAITING, reasons
+    return GREEN, ['all checks pass' + (', approved' if report['reviewDecision'] in ('APPROVED', None) or (primary and primary['approved']) else '')]
+
+
+def render(report: dict, code: int, reasons: list[str]) -> str:
+    checks = report['checks']
+    counts: dict[str, int] = {}
+    for c in checks:
+        counts[c.state] = counts.get(c.state, 0) + 1
+    out = [
+        f"{report['repo']}#{report['number']}  {VERDICT_NAMES[code].upper()}: {'; '.join(reasons)}",
+        f"  {report['title']}",
+        f"  head {report['head'][:10]} ({report['branch']} -> {report['base']}, pushed {age(report['headPushed'])} ago"
+        + (f", {report['behind']} behind" if report['behind'] else '') + f") state={report['state']}"
+        + (' DRAFT' if report['draft'] else ''),
+        f"  merge: mergeable={report['mergeable']} mergeState={report['mergeState']} reviewDecision={report['reviewDecision']}",
+        '  checks: ' + ' '.join(f'{k}={v}' for k, v in sorted(counts.items())) + f"  (base branch has {report['expected']})",
+    ]
+    for c in checks:
+        if c.state in ('pass', 'skipped'):
+            continue
+        if c.state == 'pending' and c.label != 'stale-external':
+            continue
+        flags = ' '.join(f for f in (c.label, 'required' if c.required else '', 'external' if c.external else '', 'rerunnable' if c.rerunnable else '') if f)
+        out.append(f"    {c.state:9} {c.name}  [{flags}]  {c.url or ''}")
+        if c.step:
+            out.append(f'      step: {c.step}')
+        for line in c.log:
+            out.append(f'      | {line[:220]}')
+    missing_required = [c.name for c in checks if c.required and c.state == 'pending']
+    if missing_required:
+        out.append('  required still pending: ' + ', '.join(missing_required[:10]))
+    for login, bot in report['bots'].items():
+        out.append(
+            f"  {login}: review={bot['state']} on {(bot['reviewedCommit'] or '-')[:8]}"
+            f"{' (head)' if bot['onHead'] else ' (NOT head)'} check={bot['check']} tier={bot['tier']}"
+            f" -> {'APPROVED' if bot['approved'] else 'running' if bot['running'] else 'not approved'}"
+        )
+    for thread in report['threads'][:15]:
+        out.append(f"  thread {thread['author']} {thread['where']}: {thread['text']}")
+    return '\n'.join(out)
+
+
+def serialise(report: dict, code: int, reasons: list[str]) -> dict:
+    data = dict(report)
+    data['checks'] = [c.__dict__ for c in report['checks'] if c.state not in ('pass', 'skipped')]
+    data['verdict'] = VERDICT_NAMES[code]
+    data['reasons'] = reasons
+    return data
+
+
+def run_once(targets, args) -> tuple[int, list[tuple[dict, int, list[str]]]]:
+    def one(target):
+        owner, name, number = target
+        try:
+            report = collect(owner, name, number, args.ignore, logs=not args.no_logs)
+            code, reasons = verdict(report)
+        except GitHubError as error:
+            report = {'repo': f'{owner}/{name}', 'number': number}
+            code, reasons = ERROR, [str(error).splitlines()[0] if str(error) else 'gh failed']
+        return report, code, reasons
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(one, targets))
+    worst = max((code for _, code, _ in results), key=lambda code: SEVERITY[code], default=GREEN)
+    return worst, results
+
+
+def emit(results, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps([serialise(r, c, why) if 'checks' in r else {**r, 'verdict': 'error', 'reasons': why} for r, c, why in results], indent=2, default=str))
+        return
+    for report, code, reasons in results:
+        if 'checks' in report:
+            print(render(report, code, reasons))
+        else:
+            print(f"{report['repo']}#{report['number']}  ERROR: {'; '.join(reasons)}")
+        print()
+
+
+def wait(targets, args) -> int:
+    deadline = time.time() + args.timeout * 60
+    heads: dict[tuple, str] = {}
+    seen_threads: dict[tuple, int] = {}
+    while True:
+        args_logs = args.no_logs
+        args.no_logs = True
+        worst, results = run_once(targets, args)
+        args.no_logs = args_logs
+        done = []
+        for (owner, name, number), (report, code, reasons) in zip(targets, results):
+            key = (owner, name, number)
+            if code == ERROR:
+                continue
+            if key in heads and heads[key] != report['head']:
+                print(f'{owner}/{name}#{number}: head moved {heads[key][:8]} -> {report["head"][:8]}; this wait is superseded')
+                return SUPERSEDED
+            heads.setdefault(key, report['head'])
+            new_threads = len(report['threads']) > seen_threads.get(key, len(report['threads']))
+            seen_threads[key] = len(report['threads'])
+            if code in (RED, GREEN) or new_threads or (code == BLOCKED and not any('review running' in r for r in reasons)):
+                done.append(key)
+        if done or time.time() > deadline:
+            worst, results = run_once(targets, args)
+            emit(results, args.json)
+            if time.time() > deadline and not done:
+                print(f'timed out after {args.timeout}m')
+            return worst
+        print(f'[{datetime.now():%H:%M:%S}] ' + ' | '.join(
+            f"{r['repo']}#{r['number']} {VERDICT_NAMES[c]}" for r, c, _ in results), file=sys.stderr, flush=True)
+        time.sleep(args.interval)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('prs', nargs='+', help='URL, owner/repo#N, or N')
+    parser.add_argument('-R', '--repo', help='owner/repo for bare numbers')
+    parser.add_argument('--wait', action='store_true', help='poll until red, green, blocked, a new review thread, or head moves')
+    parser.add_argument('--interval', type=int, default=45, help='seconds between polls (default 45)')
+    parser.add_argument('--timeout', type=int, default=90, help='minutes before --wait gives up (default 90)')
+    parser.add_argument('--ignore', type=re.compile, help='regex of check names whose failures are known/expected')
+    parser.add_argument('--no-logs', action='store_true', help='skip fetching failure logs')
+    parser.add_argument('--json', action='store_true')
+    args = parser.parse_args()
+    try:
+        targets = [resolve_reference(p, args.repo) for p in args.prs]
+    except GitHubError as error:
+        print(error, file=sys.stderr)
+        return ERROR
+    if args.wait:
+        return wait(targets, args)
+    worst, results = run_once(targets, args)
+    emit(results, args.json)
+    return worst
+
+
+if __name__ == '__main__':
+    sys.exit(main())

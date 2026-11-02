@@ -23,9 +23,12 @@ export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
 export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
 
 # --------------------------- Aliases ---------------------------
-alias la="eza -la --no-user --header --icons -1 -l"
-alias ls="eza --no-user --header --icons -1 -l"
-alias cat='bat'
+# Agents (Claude Code sets CLAUDECODE) need plain ls/cat output for scripting.
+if [[ -z $CLAUDECODE ]]; then
+  alias la="eza -la --no-user --header --icons -1 -l"
+  alias ls="eza --no-user --header --icons -1 -l"
+  alias cat='bat'
+fi
 alias pnpx="pnpm dlx"
 
 # --------------------------- Tool-specific Interactive Configs ---------------------------

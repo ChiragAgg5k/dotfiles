@@ -1,0 +1,94 @@
+{
+  "includeCoAuthoredBy": false,
+  "permissions": {
+    "defaultMode": "auto"
+  },
+  "model": "opus[1m]",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/chiragaggarwal/.claude/hooks/validate-conventional-commit.py",
+            "statusMessage": "Validating commit message format"
+          },
+          {
+            "type": "command",
+            "command": "python3 /Users/chiragaggarwal/.claude/hooks/bash-guard.py"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/chiragaggarwal/Local/superpowerd/rotation/capture-hook"
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "codex@openai-codex": true,
+    "frontend-design@claude-plugins-official": true,
+    "greptile@claude-plugins-official": true,
+    "rust-analyzer-lsp@claude-plugins-official": true,
+    "skills@claudes": true,
+    "swift-lsp@claude-plugins-official": true,
+    "gopls-lsp@claude-plugins-official": true,
+    "appwrite-hooks@appwrite-claude-marketplace": true,
+    "appwrite-skills@appwrite-claude-marketplace": true,
+    "appwrite-conventions@appwrite-claude-marketplace": true,
+    "appwrite-experts@appwrite-claude-marketplace": true,
+    "utopia-experts@appwrite-claude-marketplace": true,
+    "kotlin-lsp@claude-plugins-official": true,
+    "pyright-lsp@claude-plugins-official": true,
+    "postman@claude-plugins-official": true
+  },
+  "extraKnownMarketplaces": {
+    "claude-code-warp": {
+      "source": {
+        "source": "github",
+        "repo": "warpdotdev/claude-code-warp"
+      }
+    },
+    "claudes": {
+      "source": {
+        "source": "github",
+        "repo": "abnegate/claudes"
+      }
+    },
+    "openai-codex": {
+      "source": {
+        "source": "github",
+        "repo": "openai/codex-plugin-cc"
+      }
+    },
+    "appwrite": {
+      "source": {
+        "source": "github",
+        "repo": "appwrite/claude-plugin"
+      }
+    },
+    "appwrite-claude-marketplace": {
+      "source": {
+        "source": "github",
+        "repo": "abnegate/appwrite-claude-marketplace"
+      }
+    }
+  },
+  "outputStyle": "Concise",
+  "feedbackDrafts": "off",
+  "alwaysThinkingEnabled": true,
+  "effortLevel": "medium",
+  "tui": "fullscreen",
+  "skipDangerousModePermissionPrompt": true,
+  "switchModelsOnFlag": true,
+  "agentPushNotifEnabled": true,
+  "voiceEnabled": true
+}
