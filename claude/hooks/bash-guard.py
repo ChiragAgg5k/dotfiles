@@ -64,11 +64,15 @@ def main() -> None:
         decide('ask', 'Merging needs explicit approval from the user for this PR, in this conversation. '
                       'Subagents and standing loops never merge on their own.')
 
-    status = STATUS_COMMAND.search(command)
-    run_only = not re.search(r'\bgh\s+pr\s', command)
+    # Heredoc bodies and quoted strings only mention tools (scripts, commit messages, grep patterns); don't treat them as runs.
+    code = re.sub(r'<<-?\s*[\'"]?(\w+)[\'"]?.*?\n.*?\n\s*\1\b', '', command, flags=re.S)
+    code = re.sub(r'\'[^\']*\'|"(?:\\.|[^"\\])*"', "''", code)
+
+    status = STATUS_COMMAND.search(code)
+    run_only = not re.search(r'\bgh\s+pr\s', code)
     if status and run_only and background:
         pass  # waiting on a non-PR workflow run (release, deploy) in the background is fine
-    elif status and (POLLING.search(command) or not status.group(0).startswith(('gh run view', 'gh run list'))):
+    elif status and (POLLING.search(code) or not status.group(0).startswith(('gh run view', 'gh run list'))):
         decide('deny', 'Use `pr-status` instead of hand-rolled gh polling: `pr-status <url|owner/repo#N>...` '
                        'prints head SHA, failing checks with log tails (new/infra/red-on-base), review-bot verdict on head, '
                        'unresolved threads and mergeability; exit 0 green, 1 red, 2 blocked, 3 waiting. '
@@ -76,9 +80,6 @@ def main() -> None:
                        'new review thread, or a newer push). One-off `gh run view <id> --log-failed` is fine; to wait on a non-PR '
                        'workflow run (release, deploy), poll `gh run list/view` with run_in_background.')
 
-    # Heredoc bodies and quoted strings only mention tools (scripts, commit messages); don't treat them as runs.
-    code = re.sub(r'<<-?\s*[\'"]?(\w+)[\'"]?.*?\n.*?\n\s*\1\b', '', command, flags=re.S)
-    code = re.sub(r'\'[^\']*\'|"(?:\\.|[^"\\])*"', "''", code)
     if HEAVY.search(code):
         if PARALLEL.search(code):
             decide('deny', 'Do not run PHP tests/lint/analysis or composer install/update in parallel (machine load hit 60-70). '
