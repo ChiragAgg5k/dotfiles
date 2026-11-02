@@ -16,8 +16,8 @@ fpath=("/Users/chiragaggarwal/.local/share/zsh/site-functions" $fpath)
 source $ZSH/oh-my-zsh.sh
 
 # --------------------------- Constants ---------------------------
-export SUPERPOWERD_HOME="/Users/chiragaggarwal/Local/superpowerd"
-export SUPERPOWERD_WORKSPACE="/Users/chiragaggarwal/Local"
+export SUPERPOWERD_HOME="/Users/chiragaggarwal/Desktop/personal/superpowerd"
+export SUPERPOWERD_WORKSPACE="/Users/chiragaggarwal/Desktop/appwrite"
 export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
 # Explicitly opt into allowing non-official Homebrew taps (silences tap-trust hints).
 export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
@@ -71,12 +71,12 @@ export PATH="/Users/chiragaggarwal/.antigravity/antigravity/bin:$PATH"
 
 # superpowerd
 [[ -f ~/.config/iterm2/pane-title.zsh ]] && source ~/.config/iterm2/pane-title.zsh
-alias sp-rotate="/Users/chiragaggarwal/Local/superpowerd/rotation/rotate"
-alias sp-monitor="/Users/chiragaggarwal/Local/superpowerd/rotation/monitor"
-alias sp-update="/Users/chiragaggarwal/Local/superpowerd/rotation/update"
-alias sp-dashboard="npx --yes tsx /Users/chiragaggarwal/Local/superpowerd/dashboard/server.ts"
-alias sp-agent="/Users/chiragaggarwal/Local/superpowerd/sp-agent"
-alias sp-reset="/Users/chiragaggarwal/Local/superpowerd/sp-reset"
+alias sp-rotate="/Users/chiragaggarwal/Desktop/personal/superpowerd/rotation/rotate"
+alias sp-monitor="/Users/chiragaggarwal/Desktop/personal/superpowerd/rotation/monitor"
+alias sp-update="/Users/chiragaggarwal/Desktop/personal/superpowerd/rotation/update"
+alias sp-dashboard="npx --yes tsx /Users/chiragaggarwal/Desktop/personal/superpowerd/dashboard/server.ts"
+alias sp-agent="/Users/chiragaggarwal/Desktop/personal/superpowerd/sp-agent"
+alias sp-reset="/Users/chiragaggarwal/Desktop/personal/superpowerd/sp-reset"
 
 # Secrets — sourced from a non-committed file so they don't sit in .zshrc
 [ -f "$HOME/.zshrc.secrets" ] && source "$HOME/.zshrc.secrets"

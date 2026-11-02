@@ -5,8 +5,8 @@ local act = wezterm.action
 local config = wezterm.config_builder()
 
 local home = os.getenv("HOME")
-local superpowerd = os.getenv("SUPERPOWERD_HOME") or home .. "/Local/superpowerd"
-local workspace = os.getenv("SUPERPOWERD_WORKSPACE") or home .. "/Local"
+local superpowerd = os.getenv("SUPERPOWERD_HOME") or home .. "/Desktop/personal/superpowerd"
+local workspace = os.getenv("SUPERPOWERD_WORKSPACE") or home .. "/Desktop/appwrite"
 
 config.colors = {
   foreground = "#e0e4ea",

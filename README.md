@@ -42,8 +42,8 @@ Skills and agents are linked individually, so `~/.claude/skills` can also hold t
 2. **Clone the repo:**
 
    ```bash
-   git clone https://github.com/ChiragAgg5k/dotfiles.git ~/.dotfiles
-   cd ~/.dotfiles
+   git clone https://github.com/ChiragAgg5k/dotfiles.git ~/Desktop/personal/dotfiles
+   cd ~/Desktop/personal/dotfiles
    ```
 
 3. **Run the installer.** It symlinks every tracked file into place (backing up
@@ -66,7 +66,7 @@ Skills and agents are linked individually, so `~/.claude/skills` can also hold t
 
    ```bash
    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-   brew bundle --file ~/.dotfiles/Brewfile
+   brew bundle --file ~/Desktop/personal/dotfiles/Brewfile
    ```
 
 ## Post-install (one-time)
@@ -105,5 +105,10 @@ Then restart your shell: `exec zsh`.
 
 - The installer is idempotent — re-running it relinks anything that drifted and
   leaves correct links untouched.
+- Symlinks point at wherever the repo is cloned, so after moving the clone re-run
+  `./install.sh --link` to repoint them.
+- Repos are laid out as `~/Desktop/appwrite/<org>/<repo>` for work and
+  `~/Desktop/personal/<name>` for personal projects; `.zshrc` sets
+  `SUPERPOWERD_HOME`/`SUPERPOWERD_WORKSPACE` to match.
 - Some `.zshrc` entries reference personal tooling (`superpowerd`, `docker-use`);
   they're guarded so a missing tool won't break shell startup.

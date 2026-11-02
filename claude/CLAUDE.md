@@ -109,7 +109,7 @@
 
 ## Projects
 
-All repos live in `~/Local/`. Primary ecosystem is Appwrite — backend platform, cloud hosting, edge, SDKs for 11+ languages, console, database/query libraries, and supporting infrastructure (proxy, websocket, audit, cache, framework). Most backend services are PHP 8.3+ on Swoole 6. Utopia PHP framework throughout — no Laravel/Symfony.
+Work repos live in `~/Desktop/appwrite/<org>/<repo>`, mirroring GitHub; worktrees go in `~/Desktop/appwrite/<org>/worktrees/<repo>/<branch>` and non-repo work files in `~/Desktop/appwrite/scratch/` (rules in `~/Desktop/appwrite/README.md`). Personal projects live in `~/Desktop/personal/<name>`. Never clone into `~/Local`. Primary ecosystem is Appwrite — backend platform, cloud hosting, edge, SDKs for 11+ languages, console, database/query libraries, and supporting infrastructure (proxy, websocket, audit, cache, framework). Most backend services are PHP 8.3+ on Swoole 6. Utopia PHP framework throughout — no Laravel/Symfony.
 
 <!-- postman-cli:installation:start -->
 Postman CLI is installed on this device, and can be used for API Engineering work.
