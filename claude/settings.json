@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/chiragaggarwal/Desktop/personal/superpowerd/rotation/capture-hook"
+            "command": "/Users/chiragaggarwal/.local/share/superpowerd/rotation/capture-hook"
           }
         ]
       }

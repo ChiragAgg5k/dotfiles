@@ -108,7 +108,8 @@ Then restart your shell: `exec zsh`.
 - Symlinks point at wherever the repo is cloned, so after moving the clone re-run
   `./install.sh --link` to repoint them.
 - Repos are laid out as `~/Desktop/appwrite/<org>/<repo>` for work and
-  `~/Desktop/personal/<name>` for personal projects; `.zshrc` sets
-  `SUPERPOWERD_HOME`/`SUPERPOWERD_WORKSPACE` to match.
+  `~/Desktop/personal/<name>` for personal projects. superpowerd lives in
+  `~/.local/share/superpowerd`, because macOS blocks launchd agents from reading
+  `~/Desktop`; `.zshrc` sets `SUPERPOWERD_HOME`/`SUPERPOWERD_WORKSPACE` to match.
 - Some `.zshrc` entries reference personal tooling (`superpowerd`, `docker-use`);
   they're guarded so a missing tool won't break shell startup.
