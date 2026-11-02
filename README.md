@@ -23,13 +23,12 @@ My personal macOS dotfiles — zsh, git, and a handful of app configs, wired up 
 │   ├── CLAUDE.md             # global agent instructions
 │   ├── settings.json         # hooks, plugins, marketplaces
 │   ├── hooks/                # PreToolUse guards (commit format, CI polling, merges, heavy runs, repo layout)
-│   ├── agents/               # custom subagents
 │   └── skills/               # slash-command skills (linked one by one)
 └── bin/
     └── pr-status             # PR/CI/review status for agents (~/.local/bin)
 ```
 
-Skills and agents are linked individually, so `~/.claude/skills` can also hold third-party and app-synced skills this repo doesn't track. `settings.local.json`, memory and session data stay local.
+Skills are linked individually, so `~/.claude/skills` can also hold third-party and app-synced skills this repo doesn't track. `settings.local.json`, memory and session data stay local.
 
 ## Installation
 

@@ -12,73 +12,40 @@ Fix failing CI checks on a GitHub pull request, iterating until all checks pass.
 
 ## Arguments
 
-- `$ARGUMENTS` - PR URL or number (e.g., `https://github.com/owner/repo/pull/123` or `123`)
+- `$ARGUMENTS` - PR URL, `owner/repo#N`, or number (e.g., `https://github.com/owner/repo/pull/123`)
 
 ## Workflow
 
-### 1. Get PR Information
+### 1. Get PR Status
 
 ```bash
-# Get PR details
-gh pr view $ARGUMENTS --json number,headRefName,statusCheckRollup,url
-
-# Get failing checks
-gh pr checks $ARGUMENTS
+gh pr checkout $ARGUMENTS
+pr-status $ARGUMENTS
 ```
 
-### 2. Analyze Failures
+`pr-status` reports, for the current head SHA, each failing check with its failing step and log tail labelled `new`, `infra` or `red-on-base`, plus review-bot findings, unresolved threads and merge conflicts. For a fuller log of one job: `gh run view <run-id> --log-failed`.
 
-For each failing check:
-```bash
-# Get check run details and logs
-gh run view <run-id> --log-failed
-```
+### 2. Fix Issues
 
-### 3. Fix Issues
+For each failure:
+- Identify the root cause from the log
+- `infra` failures (runner, network, registry): re-run the job with `gh run rerun <run-id> --failed` instead of changing code
+- `red-on-base` failures also fail on the base branch: still fix them (there are no pre-existing failures), ideally in a separate commit
+- Make the smallest change that fixes it, run the repo's formatter/linter on the changed files, and commit as `fix(<scope>): <what was wrong>`
 
-Based on the failure logs:
-- Identify the root cause
-- Make necessary code changes
-- Commit with descriptive message
-
-### 4. Push and Wait
+### 3. Push and Wait
 
 ```bash
-# Push the fix
 git push
-
-# Wait for checks to start (give CI time to pick up the push)
-sleep 10
-
-# Poll check status until complete or timeout (10 minutes max)
-gh pr checks $ARGUMENTS --watch
+pr-status $ARGUMENTS --wait   # run with run_in_background: true
 ```
 
-### 5. Iterate If Needed
+`--wait` exits at the first new failure, conflict, new review thread, all-green, or a newer push. Act on its result instead of waiting for every check. Never hand-roll `gh pr checks` or `sleep` loops.
 
-If checks still fail:
-- Analyze new failures
-- Apply fixes
-- Push and wait again
-- Repeat until all checks pass or you've exhausted reasonable attempts (max 3 iterations)
+### 4. Iterate If Needed
 
-## Important Notes
-
-- Always checkout the PR branch first: `gh pr checkout $ARGUMENTS`
-- Read failure logs carefully - the error message contains the fix
-- Common failures in this project:
-  - **ktlint**: Run `./gradlew ktlintFormat`
-  - **tests**: Check test output, fix code or test
-  - **build**: Check compilation errors
-  - **detekt**: Check static analysis issues
-- After each fix, commit with: `fix: <description of what was fixed>`
+Repeat steps 2–3 until `pr-status` exits 0, or 3 fix attempts have not resolved the same failure (then escalate to the user with what you tried).
 
 ## Test Failure Policy
 
-**IMPORTANT:** There is no such thing as a "pre-existing" test failure. If any test fails - whether it appears related to the PR changes or not - you must fix it. The task always completes with completely passing tests. Do not dismiss failures as "unrelated to this PR."
-
-## Exit Conditions
-
-Stop iterating when:
-- All checks pass (required - no exceptions)
-- 3 fix attempts have been made without resolution (escalate to user, do not give up)
+There is no such thing as a "pre-existing" test failure. If any test fails, whether it looks related to the PR or not, fix it. The task completes with all checks passing.

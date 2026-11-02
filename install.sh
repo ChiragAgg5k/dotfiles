@@ -47,9 +47,9 @@ LINKS=(
   "bin/pr-status:.local/bin/pr-status"
 )
 
-# Claude Code hooks, agents and skills are linked one by one so ~/.claude/skills can also
+# Claude Code hooks and skills are linked one by one so ~/.claude/skills can also
 # hold third-party skills and app-synced ones that this repo doesn't track.
-for path in "$DOTFILES_DIR"/claude/hooks/* "$DOTFILES_DIR"/claude/agents/* "$DOTFILES_DIR"/claude/skills/*; do
+for path in "$DOTFILES_DIR"/claude/hooks/* "$DOTFILES_DIR"/claude/skills/*; do
   [ -e "$path" ] && LINKS+=("${path#"$DOTFILES_DIR"/}:.${path#"$DOTFILES_DIR"/}")
 done
 

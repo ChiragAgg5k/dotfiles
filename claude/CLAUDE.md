@@ -6,7 +6,7 @@
 
 ## HTTP tooling
 
-- Prefer `ax` (https://github.com/yusukebe/ax) over `curl`/`wget` for fetching URLs, probing websites/docs, and quick API checks. Installed at `~/.local/bin/ax` (v0.1.22); `~/.local/bin` is usually on PATH.
+- Prefer `ax` (https://github.com/yusukebe/ax) over `curl`/`wget` for fetching URLs, probing websites/docs, and quick API checks. Installed at `~/.local/bin/ax`; `~/.local/bin` is usually on PATH.
 - Useful flags: default report (status/ms/body); `--outline`, `--md`, `--locate`, `--row` for HTML/docs; JSON is parsed; `--body` for body only; `--headers` for full headers; `--all`/`--budget` for large responses.
 - Still use `curl` for low-level HTTP (full headers/HTTP2, uploads, cookies, complex scripting/pipelines).
 
@@ -37,7 +37,7 @@
 
 - Singular nouns for namespaces: `Adapter` not `Adapters` — a namespace is a folder, plurality is implied.
 - When extending a Utopia library in Appwrite or Cloud, use `src/Utopia` namespace: `Appwrite\Utopia\Database\Adapter\MySQL` not `Appwrite\Database\Adapter\MySQL`.
-- Dependency versions: use `^` caret ranges not `~`/`*`. `"utopia-php/framework": "^0.33"` not `"0.33.*"`.
+- Dependency versions: use `^` caret ranges not `~`/`*`. `"utopia-php/framework": "^0.33"` not `"0.33.*"`. Exception: `appwrite/appwrite` and `appwrite-labs/cloud` constrain `utopia-php/*` packages with `"*"`; keep that.
 - First-class callable syntax: `$this->action(...)` not `[$this, 'action']`.
 - Use `array_push($items, ...$new)` instead of `$items = array_merge($items, $new)` in loops — merge copies the entire array every iteration.
 - Use `array_values()` after `unset()` or `array_unique()` to re-index and keep the array a list.
@@ -56,7 +56,7 @@
 - Put a fix in the lowest repo that owns the code (shared library → core service → product built on it), not in the consumer where the symptom showed up. Say which repo and why before writing it.
 - Try at least 3 meaningfully different approaches before escalating to the user. A retry of the same thing doesn't count. Diagnose why it failed, then try something different.
 - When a test, build, or lint command fails, fix the issue immediately in the same turn. Do not report the failure and wait for instructions — diagnose the root cause and fix it. Only escalate if the same failure persists after 3 fix attempts.
-- When given a multi-step task, track progress with TaskCreate. If one step fails, fix it and continue to the next step — don't abandon the whole task or ask whether to continue.
+- When given a multi-step task, track progress with the task-list tool. If one step fails, fix it and continue to the next step — don't abandon the whole task or ask whether to continue.
 - If context is getting long and there's remaining work, spawn a continuation agent with a detailed handoff summary: what's done, what's left, the current git state, which files were touched, and any decisions made. The continuation agent must be self-contained.
 - When spawning agents for parallel work, always launch them in a single message to maximize concurrency. Never serialize independent work.
 - Prefer `/loop` for tasks that require monitoring or iteration — polling for changes, iterating on review cycles. For CI and PR reviews, use `pr-status --wait` (below).
@@ -74,8 +74,8 @@
 
 ## Workflow
 
-- When executing a loaded skill, treat each numbered step as a checklist — execute them in order, do not skip. Before running any command, verify it matches what the loaded skill specifies, not what you recall the command should be. Skills are specifications, not suggestions.
-- For any non-trivial implementation task, use the **orchestrator** agent which runs the full cycle: planner → verifier → parallel architects (worktrees) → consolidator → reviewer → verifier. For independent lightweight work (research, code reading), launch concurrent subagents in a single message. Heavy verification is always serial (see Multi-Agent Coordination).
+- When executing a loaded skill, treat each numbered step as a checklist — execute them in order, do not skip. Before running any command, verify it matches what the loaded skill specifies, not what you recall the command should be. Skills are specifications, not suggestions — except where a skill contradicts this file, which wins (e.g. the `skills@claudes` plugin's `/skills:commit` and `/skills:pr-fix` still use the `(type):` format and `gh pr checks`).
+- For multi-file features and refactors, use the **`skills:orchestrator`** agent, which runs the full cycle: planner → verifier → parallel architects (worktrees) → consolidator → reviewer → verifier. Small fixes don't need it: work directly and keep the change minimal. For independent lightweight work (research, code reading), launch concurrent subagents in a single message. Heavy verification is always serial (see Multi-Agent Coordination).
 - Never revert PR changes to work around missing dependencies. Add the dependency properly (e.g. as a VCS repository in `composer.json`).
 - Never use shims or patch files for local dependencies. Edit source in the dependency repo, commit and push, then run the package manager update in the consuming repo.
 - Format and lint before every commit. PHP: `composer lint` (Pint, PSR-12). Kotlin: ktlint. Rust: `cargo fmt` + `cargo clippy -D warnings`. JS/TS: Prettier.
@@ -87,7 +87,7 @@
 
 ## Multi-Agent Coordination
 
-- For non-trivial tasks, spawn the **orchestrator** (`subagent_type: "orchestrator"`) which runs the full cycle: **planner** → **verifier** → parallel **architect** agents in worktrees → **consolidator** → **reviewer** → **verifier**. Each agent has a single responsibility.
+- For multi-file features and refactors, spawn the **orchestrator** (`subagent_type: "skills:orchestrator"`), which runs the full cycle: **planner** → **verifier** → parallel **architect** agents in worktrees → **consolidator** → **reviewer** → **verifier**. Each agent has a single responsibility.
 - Never serialize work just because agents touch the same file. Worktree isolation means every agent gets its own repo copy. The consolidator merges intelligently at the end.
 - Parallelise editing: if in doubt whether edit tasks are independent, they probably are — launch them in worktrees and let the consolidator sort it out.
 - Parallel editing, serial verification. Never run test suites, rector, phpstan, pint, `composer install/update` or SDK generation in several worktrees/branches at once (no `&`, `xargs -P`, or parallel subagents each running them) — each run spawns its own worker pool and 5+ parallel runs saturate the machine (load 70+ on 2026-10-26). Architect subagents edit only; only the consolidator (or main session) verifies, one worktree at a time. Prefer pushing and letting GitHub CI verify (`pr-status --wait`); locally, run quick single-file checks. A hook denies a heavy command while another one is running — wait for it, don't work around it.
@@ -95,7 +95,7 @@
 
 ## Claude Code Plugin Development
 
-- When creating slash commands or skills for Claude Code plugins, always use the `commands/` directory format (not `skills/`). Slash commands must be placed in `.claude/commands/` to be visible.
+- Slash commands can be skills (`skills/<name>/SKILL.md`, preferred for new ones) or legacy `commands/<name>.md`; both show up as `/name`. In an existing plugin, follow its current layout.
 
 ## UI Changes
 

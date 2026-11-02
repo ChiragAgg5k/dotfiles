@@ -7,24 +7,17 @@ allowed-tools: Bash, Read, Grep, Glob, Task
 
 # Code Review
 
-Perform a thorough code review of the current branch against the base branch using the code-griller agent.
+Perform a thorough code review of the current branch against the base branch using the `skills:reviewer` agent.
 
 ## Workflow
 
 ### 1. Determine Base Branch
 
 ```bash
-# Get current branch
-CURRENT=$(git branch --show-current)
-
-# Check if this is appwrite (uses 1.8.x) or other project (uses main)
-if git remote -v | grep -q "appwrite"; then
-    BASE="1.8.x"
-else
-    BASE="main"
-fi
-
-echo "Reviewing $CURRENT against $BASE"
+# Base is the repository's default branch (main for Appwrite repos)
+BASE=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
+git fetch origin "$BASE"
+BASE="origin/$BASE"
 ```
 
 ### 2. Get Changes
@@ -37,16 +30,16 @@ git diff $BASE...HEAD --name-only
 git diff $BASE...HEAD
 ```
 
-### 3. Invoke Code Griller
+### 3. Invoke the Reviewer
 
-Use the **code-griller** subagent to perform a comprehensive review:
+Use the **skills:reviewer** subagent to perform a comprehensive review:
 
-- Pass the diff and changed files to the code-griller agent
+- Pass the diff and changed files to the reviewer agent
 - Request a thorough, uncompromising review
 
 ### 4. Review Focus Areas
 
-The code-griller should examine:
+The reviewer should examine:
 
 **Critical Issues**
 - Security vulnerabilities (injection, auth bypass, data exposure)
@@ -72,15 +65,12 @@ The code-griller should examine:
 - Inefficient algorithms
 
 **Testing**
-- Missing test coverage
-- Inadequate edge case testing
+- Behaviour changes not covered by an existing e2e test (suggest extending one, not adding new unit tests)
 - Flaky test patterns
 
 **Project Standards**
-- KtLint compliance
-- Proper use of Exposed ORM patterns
-- Correct serialization annotations
-- MVI pattern adherence (client code)
+- The repo's own CLAUDE.md / AGENTS.md conventions and its formatter/linter config
+- The global rules in ~/.claude/CLAUDE.md (naming, code style, smallest change)
 
 ### 5. Output Format
 

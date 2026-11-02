@@ -11,16 +11,16 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /Users/chiragaggarwal/.claude/hooks/validate-conventional-commit.py",
+            "command": "python3 $HOME/.claude/hooks/validate-conventional-commit.py",
             "statusMessage": "Validating commit message format"
           },
           {
             "type": "command",
-            "command": "python3 /Users/chiragaggarwal/.claude/hooks/bash-guard.py"
+            "command": "python3 $HOME/.claude/hooks/bash-guard.py"
           },
           {
             "type": "command",
-            "command": "python3 /Users/chiragaggarwal/.claude/hooks/workspace-layout.py"
+            "command": "python3 $HOME/.claude/hooks/workspace-layout.py"
           }
         ]
       }
@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/chiragaggarwal/.local/share/superpowerd/rotation/capture-hook"
+            "command": "$HOME/.local/share/superpowerd/rotation/capture-hook"
           }
         ]
       }
