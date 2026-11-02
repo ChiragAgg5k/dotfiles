@@ -492,11 +492,13 @@ def wait(targets, args) -> int:
             if code in (RED, GREEN) or new_threads or (code == BLOCKED and not any('review running' in r for r in reasons)):
                 done.append(key)
         if done or time.time() > deadline:
-            worst, results = run_once(targets, args)
-            emit(results, args.json)
-            if time.time() > deadline and not done:
-                print(f'timed out after {args.timeout}m')
-            return worst
+            final, results = run_once(targets, args)
+            # The poll and this full re-run can straddle a check registering; keep waiting if it now says so.
+            if final != WAITING or time.time() > deadline:
+                emit(results, args.json)
+                if time.time() > deadline and not done:
+                    print(f'timed out after {args.timeout}m')
+                return final
         print(f'[{datetime.now():%H:%M:%S}] ' + ' | '.join(
             f"{r['repo']}#{r['number']} {VERDICT_NAMES[c]}" for r, c, _ in results), file=sys.stderr, flush=True)
         time.sleep(args.interval)
