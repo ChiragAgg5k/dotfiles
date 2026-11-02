@@ -22,7 +22,7 @@ My personal macOS dotfiles — zsh, git, and a handful of app configs, wired up 
 ├── claude/                   # Claude Code: linked into ~/.claude
 │   ├── CLAUDE.md             # global agent instructions
 │   ├── settings.json         # hooks, plugins, marketplaces
-│   ├── hooks/                # PreToolUse guards (commit format, CI polling, merges, heavy runs)
+│   ├── hooks/                # PreToolUse guards (commit format, CI polling, merges, heavy runs, repo layout)
 │   ├── agents/               # custom subagents
 │   └── skills/               # slash-command skills (linked one by one)
 └── bin/
