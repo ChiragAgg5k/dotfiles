@@ -23,8 +23,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-REVIEW_BOTS = ('hansi-codes', 'greptile-apps', 'tenki-reviewer')
-PRIMARY_BOT = 'hansi-codes'
+REVIEW_BOTS = ('hansi-codes', 'appwrite', 'greptile-apps', 'tenki-reviewer')
+# Hansi is moving from hansi-codes[bot] to appwrite[bot]; either login's latest review is the verdict.
+PRIMARY_BOTS = ('hansi-codes', 'appwrite')
 INFRA_PATTERNS = re.compile(
     r'lost communication with the server|BlobNotFound|runner has received a shutdown signal'
     r'|The operation was canceled|No space left on device|exceeded the maximum execution time'
@@ -286,7 +287,8 @@ def collect(owner: str, name: str, number: int, ignore: re.Pattern | None, logs:
         mine = [r for r in all_reviews if r['author']['login'] == login]
         opinion = next((r for r in reviews if r['author']['login'] == login), None)
         latest = mine[-1] if mine else None
-        check = next((c for c in checks if c.name.lower() == login.split('-')[0]), None)
+        check_name = 'hansi' if login in PRIMARY_BOTS else login.split('-')[0]
+        check = next((c for c in checks if c.name.lower() == check_name), None)
         summary = next(
             (c for c in reversed(pull['comments']['nodes']) if c['author'] and c['author']['login'] == login and 'Tier' in c['body']),
             None,
@@ -302,6 +304,7 @@ def collect(owner: str, name: str, number: int, ignore: re.Pattern | None, logs:
         bots[login] = {
             'state': state,
             'reviewedCommit': reviewed,
+            'submittedAt': (opinion or latest or {}).get('submittedAt'),
             'onHead': reviewed == head_oid,
             'check': check.state if check else None,
             'tier': tier,
@@ -356,22 +359,24 @@ def verdict(report: dict) -> tuple[int, list[str]]:
         reasons.append('merge conflicts with ' + report['base'])
     if report['draft']:
         reasons.append('draft')
-    primary = report['bots'].get(PRIMARY_BOT)
+    hansi = [login for login in PRIMARY_BOTS if login in report['bots']]
+    reviewer = max(hansi, key=lambda login: report['bots'][login]['submittedAt'] or '', default=PRIMARY_BOTS[0])
+    primary = report['bots'].get(reviewer)
     pushed = parse_time(report['headPushed'])
     pending = [c for c in checks if c.state == 'pending' and c.label != 'stale-external']
     if primary and not primary['onHead'] and not primary['running'] and (pending or (pushed and (now() - pushed).total_seconds() < 1800)):
         primary['running'] = True  # a push since the last review: expect a re-review before judging
     reviewing = bool(primary and primary['running'])
     # While the bot re-reviews the new head, its earlier verdict and threads are not final.
-    requested = [login for login in report['changesRequested'] if not (reviewing and login == PRIMARY_BOT)]
-    threads = [t for t in report['threads'] if not (reviewing and t['author'] == PRIMARY_BOT)]
+    requested = [login for login in report['changesRequested'] if not (reviewing and login in PRIMARY_BOTS)]
+    threads = [t for t in report['threads'] if not (reviewing and t['author'] in PRIMARY_BOTS)]
     if requested:
         reasons.append('changes requested by ' + ', '.join(requested))
     if primary and not primary['approved'] and not primary['running']:
         if primary['state'] == 'APPROVED' and not primary['onHead']:
-            reasons.append(f"{PRIMARY_BOT} approval is for {(primary['reviewedCommit'] or '?')[:8]}, not head")
+            reasons.append(f"{reviewer} approval is for {(primary['reviewedCommit'] or '?')[:8]}, not head")
         elif primary['state'] != 'APPROVED':
-            reasons.append(f"{PRIMARY_BOT}: {primary['state'] or 'no review'}" + (f" ({primary['tier']})" if primary['tier'] else ''))
+            reasons.append(f"{reviewer}: {primary['state'] or 'no review'}" + (f" ({primary['tier']})" if primary['tier'] else ''))
     if threads:
         reasons.append(f"{len(threads)} unresolved thread(s)")
     if report['mergeState'] == 'BLOCKED' and report['reviewDecision'] == 'REVIEW_REQUIRED' and not reviewing:
@@ -385,7 +390,7 @@ def verdict(report: dict) -> tuple[int, list[str]]:
     if fresh and report['expected'] and registered < report['expected'] * 0.8:
         reasons.append(f"only {registered}/{report['expected']} checks registered (pushed {age(report['headPushed'])} ago)")
     if primary and primary['running']:
-        reasons.append(f'{PRIMARY_BOT} review of head pending' if not primary['onHead'] else f'{PRIMARY_BOT} review running')
+        reasons.append(f'{reviewer} review of head pending' if not primary['onHead'] else f'{reviewer} review running')
     if report['mergeable'] == 'UNKNOWN':
         reasons.append('mergeability still computing')
     if reasons:
