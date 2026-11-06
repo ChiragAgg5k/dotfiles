@@ -5,6 +5,7 @@ Usage:
   pr-status <pr>...                 one-shot report
   pr-status <pr>... --wait          poll until something actionable happens
   pr-status <pr> --json             machine-readable report
+  pr-status <pr>... --brief         verdict line only; read this instead of piping through tail/grep, which hides the exit code
 
 <pr> is a URL, owner/repo#N, or N (with -R owner/repo, or the current repo).
 
@@ -69,14 +70,11 @@ fragment Context on StatusCheckRollupContext {
 QUERY = '''
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
+    squashMergeAllowed mergeCommitAllowed rebaseMergeAllowed viewerPermission
     pullRequest(number: $number) {
       number title url state isDraft headRefName headRefOid baseRefName
       mergeable mergeStateStatus reviewDecision
-      baseRef { target { ... on Commit { oid statusCheckRollup { contexts(first: 100) { nodes {
-        __typename
-        ... on CheckRun { name conclusion status }
-        ... on StatusContext { context state }
-      } } } } } }
+      baseRef { target { ... on Commit { oid statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage endCursor } nodes { ...Context } } } } } }
       latestOpinionatedReviews(first: 20) { nodes { author { __typename login } state submittedAt commit { oid } } }
       reviews(last: 30) { nodes { author { login } state submittedAt commit { oid } } }
       reviewThreads(first: 100) { nodes {
@@ -191,23 +189,15 @@ def check_state(node: dict) -> str:
     }.get(node['conclusion'], 'fail')
 
 
-def base_failures(pull: dict) -> set[str]:
-    target = (pull.get('baseRef') or {}).get('target') or {}
-    rollup = target.get('statusCheckRollup') or {}
+def base_failures(nodes: list[dict]) -> set[str]:
     failed = set()
-    for node in (rollup.get('contexts') or {}).get('nodes', []):
+    for node in nodes:
         if node['__typename'] == 'CheckRun':
             if node['status'] == 'COMPLETED' and node['conclusion'] in ('FAILURE', 'TIMED_OUT', 'STARTUP_FAILURE'):
                 failed.add(node['name'])
         elif node['state'] in ('FAILURE', 'ERROR'):
             failed.add(node['context'])
     return failed
-
-
-def base_count(pull: dict) -> int:
-    target = (pull.get('baseRef') or {}).get('target') or {}
-    rollup = target.get('statusCheckRollup') or {}
-    return len((rollup.get('contexts') or {}).get('nodes', []))
 
 
 def strip_log(line: str) -> str:
@@ -283,7 +273,8 @@ def collect(owner: str, name: str, number: int, ignore: re.Pattern | None, logs:
     ]))
     if data.get('errors'):
         raise GitHubError(data['errors'][0].get('message', 'graphql error'))
-    pull = data['data']['repository']['pullRequest']
+    repository = data['data']['repository']
+    pull = repository['pullRequest']
     if pull['mergeable'] == 'UNKNOWN' and pull['state'] == 'OPEN':
         for _ in range(3):
             time.sleep(3)
@@ -295,7 +286,10 @@ def collect(owner: str, name: str, number: int, ignore: re.Pattern | None, logs:
     head = pull['commits']['nodes'][0]['commit']
     rollup = head.get('statusCheckRollup') or {'contexts': {'nodes': [], 'pageInfo': {'hasNextPage': False}}}
     contexts = all_contexts(owner, name, number, head['oid'], rollup['contexts'])
-    red_on_base = base_failures(pull)
+    base_target = (pull.get('baseRef') or {}).get('target') or {}
+    base_rollup = base_target.get('statusCheckRollup')
+    base_nodes = all_contexts(owner, name, number, base_target['oid'], base_rollup['contexts']) if base_rollup else []
+    red_on_base = base_failures(base_nodes)
     checks: list[Check] = []
     for node in contexts:
         external = node['__typename'] == 'StatusContext'
@@ -399,8 +393,14 @@ def collect(owner: str, name: str, number: int, ignore: re.Pattern | None, logs:
         'lastActivity': max(activity), 'activeRuns': active_runs(owner, name, head_oid) if pull['state'] == 'OPEN' else [],
         'branch': pull['headRefName'], 'base': pull['baseRefName'], 'behind': behind,
         'mergeable': pull['mergeable'], 'mergeState': pull['mergeStateStatus'], 'reviewDecision': pull['reviewDecision'],
-        'checks': checks, 'expected': base_count(pull), 'bots': bots, 'threads': threads,
+        'checks': checks, 'expected': len(base_nodes), 'bots': bots, 'threads': threads,
         'changesRequested': [r['author']['login'] for r in reviews if r['state'] == 'CHANGES_REQUESTED'],
+        'mergeMethods': [flag for flag, allowed in (
+            ('--squash', repository['squashMergeAllowed']),
+            ('--merge', repository['mergeCommitAllowed']),
+            ('--rebase', repository['rebaseMergeAllowed']),
+        ) if allowed],
+        'permission': repository['viewerPermission'],
         'humanApproved': any(
             r['state'] == 'APPROVED' and r['author'].get('__typename') != 'Bot' and (r.get('commit') or {}).get('oid') == head_oid
             for r in reviews
@@ -483,6 +483,17 @@ def verdict(report: dict) -> tuple[int, list[str]]:
     return GREEN, ['all checks pass, no review required']
 
 
+def merge_hint(report: dict) -> str:
+    if report['permission'] not in ('WRITE', 'MAINTAIN', 'ADMIN'):
+        return f"  cannot merge: your permission on {report['repo']} is {report['permission']}"
+    return f"  merge with: {' or '.join(report['mergeMethods'])} --match-head-commit {report['head']}"
+
+
+def render_brief(report: dict, code: int, reasons: list[str]) -> str:
+    line = f"{report['repo']}#{report['number']}  {VERDICT_NAMES[code].upper()}: {'; '.join(reasons)}"
+    return line + '\n' + merge_hint(report) if code == GREEN and report['state'] == 'OPEN' else line
+
+
 def render(report: dict, code: int, reasons: list[str]) -> str:
     checks = report['checks']
     counts: dict[str, int] = {}
@@ -522,6 +533,8 @@ def render(report: dict, code: int, reasons: list[str]) -> str:
         )
     for thread in report['threads'][:15]:
         out.append(f"  thread {thread['author']} {thread['where']}: {thread['text']}")
+    if code == GREEN and report['state'] == 'OPEN':
+        out.append(merge_hint(report))
     return '\n'.join(out)
 
 
@@ -550,16 +563,19 @@ def run_once(targets, args) -> tuple[int, list[tuple[dict, int, list[str]]]]:
     return worst, results
 
 
-def emit(results, as_json: bool) -> None:
+def emit(results, as_json: bool, brief: bool = False) -> None:
     if as_json:
         print(json.dumps([serialise(r, c, why) if 'checks' in r else {**r, 'verdict': 'error', 'reasons': why} for r, c, why in results], indent=2, default=str))
         return
     for report, code, reasons in results:
-        if 'checks' in report:
-            print(render(report, code, reasons))
-        else:
+        if 'checks' not in report:
             print(f"{report['repo']}#{report['number']}  ERROR: {'; '.join(reasons)}")
-        print()
+        elif brief:
+            print(render_brief(report, code, reasons))
+        else:
+            print(render(report, code, reasons))
+        if not brief:
+            print()
 
 
 def keep_waiting(report: dict, code: int, reasons: list[str]) -> bool:
@@ -588,7 +604,7 @@ def wait(targets, args) -> int:
             if code == ERROR:
                 errors[key] = errors.get(key, 0) + 1
                 if errors[key] >= MAX_POLL_ERRORS:
-                    emit(results, args.json)
+                    emit(results, args.json, args.brief)
                     return ERROR
                 continue
             errors[key] = 0
@@ -606,7 +622,7 @@ def wait(targets, args) -> int:
             waiting = any(keep_waiting(*result) for result in results)
             actionable = any(code not in (GREEN, WAITING, ERROR) and not keep_waiting(report, code, reasons) for report, code, reasons in results)
             if actionable or not waiting or time.time() > deadline:
-                emit(results, args.json)
+                emit(results, args.json, args.brief)
                 if time.time() > deadline and not done:
                     print(f'timed out after {args.timeout}m')
                 return final
@@ -625,7 +641,9 @@ def main() -> int:
     parser.add_argument('--ignore', type=re.compile, help='regex of check names whose failures are known/expected')
     parser.add_argument('--no-logs', action='store_true', help='skip fetching failure logs')
     parser.add_argument('--json', action='store_true')
+    parser.add_argument('--brief', action='store_true', help='print only the verdict line and merge hint; implies --no-logs')
     args = parser.parse_args()
+    args.no_logs = args.no_logs or args.brief
     try:
         targets = [resolve_reference(p, args.repo) for p in args.prs]
     except GitHubError as error:
@@ -634,7 +652,7 @@ def main() -> int:
     if args.wait:
         return wait(targets, args)
     worst, results = run_once(targets, args)
-    emit(results, args.json)
+    emit(results, args.json, args.brief)
     return worst
 
 
