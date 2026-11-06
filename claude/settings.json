@@ -1,6 +1,9 @@
 {
   "includeCoAuthoredBy": false,
   "permissions": {
+    "allow": [
+      "Bash"
+    ],
     "defaultMode": "auto"
   },
   "model": "opus[1m]",

@@ -64,9 +64,9 @@
 
 ## Pull Requests & Merging
 
-- PR/CI/review status: always use `pr-status <url|owner/repo#N>...` (in `~/.local/bin`). It reports, for the current head SHA: failing checks with the failing step and log tail labelled `new` / `infra` / `red-on-base`, pending and unregistered checks, the review-bot verdict (approved only if APPROVED on the current head), unresolved threads and mergeability/conflicts. Exit 0 green, 1 red, 2 blocked, 3 waiting, 5 head moved. Don't hand-roll `gh pr checks`/`sleep` loops (a hook blocks them).
+- PR/CI/review status: always use `pr-status <url|owner/repo#N>...` (in `~/.local/bin`). It reports, for the current head SHA: failing checks with the failing step and log tail labelled `new` / `infra` / `red-on-base`, pending and unregistered checks, the review-bot verdict (approved if APPROVED on the current head or the bot's check on head is Tier S), unresolved threads and mergeability/conflicts. Exit 0 green, 1 red, 2 blocked, 3 waiting, 5 head moved. Don't hand-roll `gh pr checks`/`sleep` loops (a hook blocks them).
 - To wait for CI or a review-bot re-review, run `pr-status <pr>... --wait` with `run_in_background: true`. It exits at the first new failure, conflict, new review thread, all-green, or a newer push — act on that immediately instead of waiting for every check. Never call a PR green, approved or "done" from an earlier result or a stale approval; re-run `pr-status` after every push.
-- Merging needs my explicit approval naming the PR, in the current conversation. "You can merge when green" covers only the PRs being discussed at that moment, expires when the topic changes, and is never passed on to subagents or background loops. When in doubt, report "ready to merge" and stop. A hook asks me before every `gh pr merge`.
+- Merge without asking me once `pr-status` exits 0 for the current head: all CI green and approved. Re-run it right before merging. This applies to main sessions, subagents and background loops. Don't merge if I said to hold that PR.
 - Never merge a PR (in any repo) without all CI checks passing first. No `--admin`, no `--auto` to skip checks. Wait for green CI, then merge.
 - This applies especially to cross-repo dependency fixes: if a fix is in a base repo (a shared library), wait for that repo's CI to pass before merging and propagating (`composer update`) to the repos that depend on it.
 - Only bypass CI checks if explicitly instructed to do so for a specific PR.
@@ -91,7 +91,6 @@
 - Never serialize work just because agents touch the same file. Worktree isolation means every agent gets its own repo copy. The consolidator merges intelligently at the end.
 - Parallelise editing: if in doubt whether edit tasks are independent, they probably are — launch them in worktrees and let the consolidator sort it out.
 - Parallel editing, serial verification. Never run test suites, rector, phpstan, pint, `composer install/update` or SDK generation in several worktrees/branches at once (no `&`, `xargs -P`, or parallel subagents each running them) — each run spawns its own worker pool and 5+ parallel runs saturate the machine (load 70+ on 2026-10-26). Architect subagents edit only; only the consolidator (or main session) verifies, one worktree at a time. Prefer pushing and letting GitHub CI verify (`pr-status --wait`); locally, run quick single-file checks. A hook denies a heavy command while another one is running — wait for it, don't work around it.
-- Never give subagents permission to merge; they report "ready" back to the main session.
 
 ## Claude Code Plugin Development
 

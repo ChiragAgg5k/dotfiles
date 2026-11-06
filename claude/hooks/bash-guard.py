@@ -2,8 +2,7 @@
 """PreToolUse hook for Bash: steer recurring agent mistakes found in the transcript audit.
 
 1. CI polling: hand-rolled `gh pr checks` / `gh run watch` / sleep loops -> deny, use `pr-status`.
-2. Merging: `gh pr merge` (or the merge REST endpoint) -> ask the user every time.
-3. Heavy verification: PHP test/lint/analyse and composer install/update -> deny when another
+2. Heavy verification: PHP test/lint/analyse and composer install/update -> deny when another
    one is already running on the machine, or when the command fans them out in parallel.
 """
 import json
@@ -13,7 +12,6 @@ import sys
 
 STATUS_COMMAND = re.compile(r'\bgh\s+(pr\s+checks|run\s+(watch|view|list)|pr\s+view\b[^|;&\n]*(statusCheckRollup|mergeStateStatus|reviewDecision))')
 POLLING = re.compile(r'\bsleep\s+\d|\buntil\b|\bwhile\b|--watch\b|\bgh\s+run\s+watch\b')
-MERGE = re.compile(r'\bgh\s+pr\s+merge\b|\bgh\s+api\b[^|;&\n]*/pulls/\d+/merge\b')
 HEAVY = re.compile(
     r'\b(phpunit|paratest|phpstan|psalm|rector|pint|php-cs-fixer|phpcs)\b'
     r'|\bcomposer\s+(install|update|require|lint|check|analyse|analyze|test|format|fix)\b'
@@ -59,10 +57,6 @@ def main() -> None:
         return
     command = (payload.get('tool_input') or {}).get('command', '')
     background = bool((payload.get('tool_input') or {}).get('run_in_background'))
-
-    if MERGE.search(command):
-        decide('ask', 'Merging needs explicit approval from the user for this PR, in this conversation. '
-                      'Subagents and standing loops never merge on their own.')
 
     # Heredoc bodies and quoted strings only mention tools (scripts, commit messages, grep patterns); don't treat them as runs.
     code = re.sub(r'<<-?\s*[\'"]?(\w+)[\'"]?.*?\n.*?\n\s*\1\b', '', command, flags=re.S)
