@@ -11,7 +11,7 @@ Usage:
 Exit codes: 0 green, 1 red, 2 blocked, 3 waiting, 4 error, 5 superseded (head moved while waiting).
 With several PRs the worst code wins (red > blocked > waiting > green).
 
-Never merges. Merging is a separate action that needs the user's approval.
+Never merges. Exit 0 on the current head is the signal that a PR is safe to merge.
 """
 import argparse
 import json
@@ -36,12 +36,35 @@ FAILURE_START = re.compile(
     r'There (was|were) \d+ (failure|error)|FAILURES!|ERRORS!|\berror TS\d+|^Error:|\bFAIL\b|Traceback|panicked at|\[ERROR\]',
 )
 STALE_EXTERNAL_SECONDS = 2 * 3600
+# Workflows register late and chain into each other: don't call a PR green until check activity has been quiet this long.
+SETTLE_SECONDS = 120
+# How long --wait keeps waiting on a review GitHub requires, after the last check activity.
+REVIEW_GRACE_SECONDS = 1800
+GH_TIMEOUT_SECONDS = 120
+MAX_POLL_ERRORS = 5
+REVIEW_REQUIRED = 'review required'
+TOP_TIER = re.compile(r'Tier S\b')
 LOG_LINES = 30
 MAX_LOGS = 3
 
 GREEN, RED, BLOCKED, WAITING, ERROR, SUPERSEDED = 0, 1, 2, 3, 4, 5
 VERDICT_NAMES = {GREEN: 'green', RED: 'red', BLOCKED: 'blocked', WAITING: 'waiting', ERROR: 'error', SUPERSEDED: 'superseded'}
 SEVERITY = {RED: 5, BLOCKED: 4, ERROR: 3, WAITING: 2, SUPERSEDED: 1, GREEN: 0}
+
+CONTEXT_FRAGMENT = '''
+fragment Context on StatusCheckRollupContext {
+  __typename
+  ... on CheckRun {
+    name title status conclusion detailsUrl startedAt completedAt databaseId
+    isRequired(pullRequestNumber: $number)
+    checkSuite { workflowRun { databaseId workflow { name } } }
+  }
+  ... on StatusContext {
+    context state targetUrl createdAt
+    isRequired(pullRequestNumber: $number)
+  }
+}
+'''
 
 QUERY = '''
 query($owner: String!, $name: String!, $number: Int!) {
@@ -54,7 +77,7 @@ query($owner: String!, $name: String!, $number: Int!) {
         ... on CheckRun { name conclusion status }
         ... on StatusContext { context state }
       } } } } } }
-      latestOpinionatedReviews(first: 20) { nodes { author { login } state submittedAt commit { oid } } }
+      latestOpinionatedReviews(first: 20) { nodes { author { __typename login } state submittedAt commit { oid } } }
       reviews(last: 30) { nodes { author { login } state submittedAt commit { oid } } }
       reviewThreads(first: 100) { nodes {
         isResolved isOutdated path line
@@ -63,23 +86,22 @@ query($owner: String!, $name: String!, $number: Int!) {
       comments(last: 50) { nodes { author { login } updatedAt body } }
       commits(last: 1) { nodes { commit {
         oid committedDate
-        statusCheckRollup { contexts(first: 100) { totalCount nodes {
-          __typename
-          ... on CheckRun {
-            name status conclusion detailsUrl startedAt completedAt databaseId
-            isRequired(pullRequestNumber: $number)
-            checkSuite { workflowRun { databaseId workflow { name } } }
-          }
-          ... on StatusContext {
-            context state targetUrl createdAt
-            isRequired(pullRequestNumber: $number)
-          }
-        } } }
+        statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage endCursor } nodes { ...Context } } }
       } } }
     }
   }
 }
-'''
+''' + CONTEXT_FRAGMENT
+
+CONTEXTS_QUERY = '''
+query($owner: String!, $name: String!, $number: Int!, $oid: GitObjectID!, $after: String!) {
+  repository(owner: $owner, name: $name) {
+    object(oid: $oid) { ... on Commit {
+      statusCheckRollup { contexts(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { ...Context } } }
+    } }
+  }
+}
+''' + CONTEXT_FRAGMENT
 
 
 class GitHubError(Exception):
@@ -88,11 +110,15 @@ class GitHubError(Exception):
 
 def gh(args: list[str]) -> str:
     for attempt in range(3):
-        result = subprocess.run(['gh', *args], capture_output=True, text=True)
-        if result.returncode == 0:
-            return result.stdout
-        message = result.stderr.strip() or result.stdout.strip()
-        if re.search(r'error connecting|timeout|50[0234]|EOF|reset by peer', message, re.I) and attempt < 2:
+        try:
+            result = subprocess.run(['gh', *args], capture_output=True, text=True, timeout=GH_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            message = f'gh timed out after {GH_TIMEOUT_SECONDS}s'
+        else:
+            if result.returncode == 0:
+                return result.stdout
+            message = result.stderr.strip() or result.stdout.strip()
+        if re.search(r'error connecting|timeout|timed out|50[0234]|EOF|reset by peer|rate limit', message, re.I) and attempt < 2:
             time.sleep(3 * (attempt + 1))
             continue
         raise GitHubError(message)
@@ -147,6 +173,7 @@ class Check:
     url: str | None
     job: int | None
     workflow: str | None
+    title: str = ''
     label: str = ''  # new, infra, red-on-base, ignored, stale-external
     step: str = ''
     log: list[str] = field(default_factory=list)
@@ -225,6 +252,30 @@ def failure_detail(owner: str, name: str, check: Check) -> None:
         check.log = [f'annotation: {m.splitlines()[0][:200]}' for m in messages[:3]] + check.log
 
 
+def all_contexts(owner: str, name: str, number: int, oid: str, contexts: dict) -> list[dict]:
+    nodes = list(contexts['nodes'])
+    page = contexts['pageInfo']
+    while page['hasNextPage']:
+        data = json.loads(gh([
+            'api', 'graphql', '-f', f'query={CONTEXTS_QUERY}',
+            '-F', f'owner={owner}', '-F', f'name={name}', '-F', f'number={number}',
+            '-f', f'oid={oid}', '-f', f"after={page['endCursor']}",
+        ]))
+        contexts = data['data']['repository']['object']['statusCheckRollup']['contexts']
+        nodes.extend(contexts['nodes'])
+        page = contexts['pageInfo']
+    return nodes
+
+
+def active_runs(owner: str, name: str, head: str) -> list[str]:
+    # A workflow queued on concurrency or a runner has no check run yet, so the rollup can't see it.
+    try:
+        runs = json.loads(gh(['api', f'repos/{owner}/{name}/actions/runs?head_sha={head}&per_page=100']))
+    except (GitHubError, json.JSONDecodeError):
+        return []
+    return sorted({run['name'] for run in runs.get('workflow_runs', []) if run.get('status') != 'completed'})
+
+
 def collect(owner: str, name: str, number: int, ignore: re.Pattern | None, logs: bool) -> dict:
     data = json.loads(gh([
         'api', 'graphql', '-f', f'query={QUERY}',
@@ -242,10 +293,11 @@ def collect(owner: str, name: str, number: int, ignore: re.Pattern | None, logs:
                 break
 
     head = pull['commits']['nodes'][0]['commit']
-    rollup = head.get('statusCheckRollup') or {'contexts': {'nodes': [], 'totalCount': 0}}
+    rollup = head.get('statusCheckRollup') or {'contexts': {'nodes': [], 'pageInfo': {'hasNextPage': False}}}
+    contexts = all_contexts(owner, name, number, head['oid'], rollup['contexts'])
     red_on_base = base_failures(pull)
     checks: list[Check] = []
-    for node in rollup['contexts']['nodes']:
+    for node in contexts:
         external = node['__typename'] == 'StatusContext'
         run = ((node.get('checkSuite') or {}).get('workflowRun') or {})
         check = Check(
@@ -257,6 +309,7 @@ def collect(owner: str, name: str, number: int, ignore: re.Pattern | None, logs:
             url=node.get('targetUrl') if external else node.get('detailsUrl'),
             job=node.get('databaseId') if run.get('databaseId') else None,  # only Actions jobs have logs
             workflow=(run.get('workflow') or {}).get('name'),
+            title=node.get('title') or '',
         )
         if check.state == 'fail':
             if ignore and ignore.search(check.name):
@@ -280,6 +333,10 @@ def collect(owner: str, name: str, number: int, ignore: re.Pattern | None, logs:
             failure_detail(owner, name, check)
 
     head_oid = head['oid']
+    starts = [c.started for c in checks if c.started]
+    # committedDate predates the push for rebased or locally held commits; the first check starting is the closest signal.
+    pushed = max(head['committedDate'], min(starts)) if starts else head['committedDate']
+    activity = [pushed, *starts, *(node['completedAt'] for node in contexts if node.get('completedAt'))]
     reviews = [r for r in pull['latestOpinionatedReviews']['nodes'] if r['author']]
     all_reviews = [r for r in pull['reviews']['nodes'] if r['author']]
     bots = {}
@@ -308,7 +365,12 @@ def collect(owner: str, name: str, number: int, ignore: re.Pattern | None, logs:
             'onHead': reviewed == head_oid,
             'check': check.state if check else None,
             'tier': tier,
-            'approved': state == 'APPROVED' and reviewed == head_oid and (check is None or check.state == 'pass'),
+            # The bot's check runs per commit, so its result is the verdict on head even when it adds no new review.
+            'approved': (
+                (state == 'APPROVED' and reviewed == head_oid and (check is None or check.state == 'pass'))
+                or bool(check and check.state == 'pass' and TOP_TIER.search(check.title))
+                or bool(check and check.state == 'skipped' and state == 'APPROVED')
+            ),
             'running': bool(check and check.state == 'pending'),
         }
 
@@ -333,11 +395,16 @@ def collect(owner: str, name: str, number: int, ignore: re.Pattern | None, logs:
 
     return {
         'repo': f'{owner}/{name}', 'number': number, 'title': pull['title'], 'url': pull['url'],
-        'state': pull['state'], 'draft': pull['isDraft'], 'head': head_oid, 'headPushed': head['committedDate'],
+        'state': pull['state'], 'draft': pull['isDraft'], 'head': head_oid, 'headPushed': pushed,
+        'lastActivity': max(activity), 'activeRuns': active_runs(owner, name, head_oid) if pull['state'] == 'OPEN' else [],
         'branch': pull['headRefName'], 'base': pull['baseRefName'], 'behind': behind,
         'mergeable': pull['mergeable'], 'mergeState': pull['mergeStateStatus'], 'reviewDecision': pull['reviewDecision'],
         'checks': checks, 'expected': base_count(pull), 'bots': bots, 'threads': threads,
         'changesRequested': [r['author']['login'] for r in reviews if r['state'] == 'CHANGES_REQUESTED'],
+        'humanApproved': any(
+            r['state'] == 'APPROVED' and r['author'].get('__typename') != 'Bot' and (r.get('commit') or {}).get('oid') == head_oid
+            for r in reviews
+        ),
     }
 
 
@@ -357,6 +424,12 @@ def verdict(report: dict) -> tuple[int, list[str]]:
         return RED, reasons
     if conflicted:
         reasons.append('merge conflicts with ' + report['base'])
+    rerun = [c for c in checks if c.state == 'cancelled' or (c.state == 'fail' and c.label == 'infra')]
+    if rerun:
+        reasons.append(f'{len(rerun)} need a rerun (cancelled/infra): ' + ', '.join(c.name for c in rerun[:6]))
+    red_required = [c for c in checks if c.state == 'fail' and c.label == 'red-on-base' and c.required]
+    if red_required:
+        reasons.append('required but red on base: ' + ', '.join(c.name for c in red_required[:6]))
     if report['draft']:
         reasons.append('draft')
     hansi = [login for login in PRIMARY_BOTS if login in report['bots']]
@@ -364,15 +437,16 @@ def verdict(report: dict) -> tuple[int, list[str]]:
     primary = report['bots'].get(reviewer)
     pushed = parse_time(report['headPushed'])
     pending = [c for c in checks if c.state == 'pending' and c.label != 'stale-external']
-    if primary and not primary['onHead'] and not primary['running'] and (pending or (pushed and (now() - pushed).total_seconds() < 1800)):
+    if primary and not primary['onHead'] and not primary['running'] and primary['check'] not in ('pass', 'skipped', 'fail') and (pending or (pushed and (now() - pushed).total_seconds() < 1800)):
         primary['running'] = True  # a push since the last review: expect a re-review before judging
     reviewing = bool(primary and primary['running'])
     # While the bot re-reviews the new head, its earlier verdict and threads are not final.
-    requested = [login for login in report['changesRequested'] if not (reviewing and login in PRIMARY_BOTS)]
+    cleared = reviewing or bool(primary and primary['approved'])
+    requested = [login for login in report['changesRequested'] if not (cleared and login in PRIMARY_BOTS)]
     threads = [t for t in report['threads'] if not (reviewing and t['author'] in PRIMARY_BOTS)]
     if requested:
         reasons.append('changes requested by ' + ', '.join(requested))
-    if primary and not primary['approved'] and not primary['running']:
+    if primary and not primary['approved'] and not primary['running'] and not report['humanApproved']:
         if primary['state'] == 'APPROVED' and not primary['onHead']:
             reasons.append(f"{reviewer} approval is for {(primary['reviewedCommit'] or '?')[:8]}, not head")
         elif primary['state'] != 'APPROVED':
@@ -380,7 +454,7 @@ def verdict(report: dict) -> tuple[int, list[str]]:
     if threads:
         reasons.append(f"{len(threads)} unresolved thread(s)")
     if report['mergeState'] == 'BLOCKED' and report['reviewDecision'] == 'REVIEW_REQUIRED' and not reviewing:
-        reasons.append('review required')
+        reasons.append(REVIEW_REQUIRED)
     if reasons:
         return BLOCKED, reasons
     registered = len(checks)
@@ -391,11 +465,22 @@ def verdict(report: dict) -> tuple[int, list[str]]:
         reasons.append(f"only {registered}/{report['expected']} checks registered (pushed {age(report['headPushed'])} ago)")
     if primary and primary['running']:
         reasons.append(f'{reviewer} review of head pending' if not primary['onHead'] else f'{reviewer} review running')
-    if report['mergeable'] == 'UNKNOWN':
+    if report['mergeable'] == 'UNKNOWN' or report['mergeState'] == 'UNKNOWN':
         reasons.append('mergeability still computing')
+    if report['activeRuns']:
+        reasons.append('workflows not finished: ' + ', '.join(report['activeRuns'][:5]))
+    activity = parse_time(report['lastActivity'])
+    if activity and (now() - activity).total_seconds() < SETTLE_SECONDS:
+        reasons.append(f"settling (last check activity {age(report['lastActivity'])} ago)")
     if reasons:
         return WAITING, reasons
-    return GREEN, ['all checks pass' + (', approved' if report['reviewDecision'] in ('APPROVED', None) or (primary and primary['approved']) else '')]
+    if report['mergeState'] == 'BEHIND':
+        return BLOCKED, [f"branch must be updated from {report['base']}"]
+    if report['mergeState'] == 'BLOCKED':
+        return BLOCKED, ['GitHub reports merge blocked by branch protection']
+    if report['reviewDecision'] == 'APPROVED' or report['humanApproved'] or (primary and primary['approved']):
+        return GREEN, ['all checks pass, approved']
+    return GREEN, ['all checks pass, no review required']
 
 
 def render(report: dict, code: int, reasons: list[str]) -> str:
@@ -427,6 +512,9 @@ def render(report: dict, code: int, reasons: list[str]) -> str:
     if missing_required:
         out.append('  required still pending: ' + ', '.join(missing_required[:10]))
     for login, bot in report['bots'].items():
+        # Both Hansi logins share one check; a login that never reviewed is just noise.
+        if login in PRIMARY_BOTS and not bot['state'] and any(other in report['bots'] and report['bots'][other]['state'] for other in PRIMARY_BOTS):
+            continue
         out.append(
             f"  {login}: review={bot['state']} on {(bot['reviewedCommit'] or '-')[:8]}"
             f"{' (head)' if bot['onHead'] else ' (NOT head)'} check={bot['check']} tier={bot['tier']}"
@@ -451,9 +539,9 @@ def run_once(targets, args) -> tuple[int, list[tuple[dict, int, list[str]]]]:
         try:
             report = collect(owner, name, number, args.ignore, logs=not args.no_logs)
             code, reasons = verdict(report)
-        except GitHubError as error:
+        except Exception as error:  # one bad response must not lose the other PRs' reports or kill a --wait
             report = {'repo': f'{owner}/{name}', 'number': number}
-            code, reasons = ERROR, [str(error).splitlines()[0] if str(error) else 'gh failed']
+            code, reasons = ERROR, [f'{type(error).__name__}: {str(error).splitlines()[0] if str(error) else "gh failed"}']
         return report, code, reasons
 
     with ThreadPoolExecutor(max_workers=6) as pool:
@@ -474,10 +562,21 @@ def emit(results, as_json: bool) -> None:
         print()
 
 
+def keep_waiting(report: dict, code: int, reasons: list[str]) -> bool:
+    if code in (WAITING, ERROR):
+        return True
+    if code != BLOCKED or reasons != [REVIEW_REQUIRED]:
+        return False
+    # Only a review is missing and one may still arrive: the bot hasn't given its verdict on head and this is recent.
+    settled = any(bot['onHead'] or bot['check'] in ('pass', 'skipped') for login, bot in report['bots'].items() if login in PRIMARY_BOTS)
+    return not settled and (now() - parse_time(report['lastActivity'])).total_seconds() < REVIEW_GRACE_SECONDS
+
+
 def wait(targets, args) -> int:
     deadline = time.time() + args.timeout * 60
     heads: dict[tuple, str] = {}
     seen_threads: dict[tuple, int] = {}
+    errors: dict[tuple, int] = {}
     while True:
         args_logs = args.no_logs
         args.no_logs = True
@@ -487,19 +586,26 @@ def wait(targets, args) -> int:
         for (owner, name, number), (report, code, reasons) in zip(targets, results):
             key = (owner, name, number)
             if code == ERROR:
+                errors[key] = errors.get(key, 0) + 1
+                if errors[key] >= MAX_POLL_ERRORS:
+                    emit(results, args.json)
+                    return ERROR
                 continue
+            errors[key] = 0
             if key in heads and heads[key] != report['head']:
                 print(f'{owner}/{name}#{number}: head moved {heads[key][:8]} -> {report["head"][:8]}; this wait is superseded')
                 return SUPERSEDED
             heads.setdefault(key, report['head'])
             new_threads = len(report['threads']) > seen_threads.get(key, len(report['threads']))
             seen_threads[key] = len(report['threads'])
-            if code in (RED, GREEN) or new_threads or (code == BLOCKED and not any('review running' in r for r in reasons)):
+            if not keep_waiting(report, code, reasons) or new_threads:
                 done.append(key)
         if done or time.time() > deadline:
             final, results = run_once(targets, args)
-            # The poll and this full re-run can straddle a check registering; keep waiting if it now says so.
-            if final != WAITING or time.time() > deadline:
+            # The poll and this full re-run can straddle a check registering, and other PRs may still be in progress.
+            waiting = any(keep_waiting(*result) for result in results)
+            actionable = any(code not in (GREEN, WAITING, ERROR) and not keep_waiting(report, code, reasons) for report, code, reasons in results)
+            if actionable or not waiting or time.time() > deadline:
                 emit(results, args.json)
                 if time.time() > deadline and not done:
                     print(f'timed out after {args.timeout}m')
