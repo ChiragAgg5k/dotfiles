@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+#
+# worktree-sweep: remove git worktrees that hold nothing worth keeping.
+#
+# A worktree is removed only when all of these hold:
+#   - no uncommitted or untracked changes
+#   - no open PR for its branch
+#   - every commit is on a remote, or its PR is merged
+#   - no file or commit in it is newer than --idle days
+#   - no running process has its working directory inside it
+# Local branches of merged PRs are deleted with their worktree. Repos whose
+# fetch or GitHub lookup fails are skipped, never guessed at.
+#
+# Usage:
+#   worktree-sweep [--dry-run] [--idle DAYS] [ROOT...]
+#
+# ROOT defaults to ~/Desktop/appwrite and ~/Desktop/personal.
+#
+set -uo pipefail
+
+dry=false
+idle=3
+roots=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) dry=true ;;
+    --idle) idle="$2"; shift ;;
+    -h|--help) sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) roots+=("$1") ;;
+  esac
+  shift
+done
+[ ${#roots[@]} -eq 0 ] && roots=("$HOME/Desktop/appwrite" "$HOME/Desktop/personal")
+
+log() { printf '%s %s\n' "$(date '+%F %T')" "$*"; }
+
+cwds=$(lsof -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | sort -u)
+removed=0
+kept=0
+
+while IFS= read -r repo; do
+  [ "$(git -C "$repo" worktree list | wc -l)" -gt 1 ] || continue
+  if ! git -C "$repo" fetch --all --prune -q 2>/dev/null; then
+    log "skip $repo: fetch failed"
+    continue
+  fi
+  slug=$(git -C "$repo" remote get-url origin 2>/dev/null | sed -E 's#.*github.com[:/]##; s#\.git$##')
+
+  while IFS=$'\t' read -r path branch; do
+    [ -d "$path" ] || continue
+    reason=''
+    if [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]; then
+      reason='uncommitted changes'
+    elif printf '%s\n' "$cwds" | grep -qF "$path"; then
+      reason='in use'
+    elif [ $(( $(date +%s) - $(git -C "$path" log -1 --format=%ct 2>/dev/null || echo 0) )) -lt $(( idle * 86400 )) ] ||
+         [ -n "$(find "$path" -maxdepth 3 -mtime "-$idle" -not -path '*/.git*' -not -path '*/node_modules/*' -not -path '*/vendor/*' -print -quit 2>/dev/null)" ]; then
+      reason="touched in the last $idle days"
+    fi
+
+    states=''
+    if [ -z "$reason" ] && [ "$branch" != '(detached)' ]; then
+      if ! states=$(gh pr list -R "$slug" --head "$branch" --state all --json state -q '.[].state' 2>/dev/null); then
+        reason='GitHub lookup failed'
+      elif grep -qx OPEN <<<"$states"; then
+        reason='open PR'
+      fi
+    fi
+    if [ -z "$reason" ] && ! grep -qx MERGED <<<"$states" &&
+       [ "$(git -C "$path" rev-list HEAD --not --remotes 2>/dev/null | wc -l)" -gt 0 ]; then
+      reason='unpushed commits'
+    fi
+
+    if [ -n "$reason" ]; then
+      kept=$((kept + 1))
+      log "keep $path ($reason)"
+      continue
+    fi
+
+    log "remove $path [$branch]"
+    removed=$((removed + 1))
+    [ "$dry" = true ] && continue
+    git -C "$repo" worktree remove --force "$path" || continue
+    if grep -qx MERGED <<<"$states"; then
+      git -C "$repo" branch -D "$branch" >/dev/null 2>&1 && log "delete branch $branch"
+    fi
+  done < <(git -C "$repo" worktree list --porcelain | awk '
+    /^worktree /{p=substr($0,10); b=""}
+    /^branch /{b=substr($0,19)}
+    /^detached/{b="(detached)"}
+    /^$/{if (n++) print p"\t"b}')
+
+  [ "$dry" = true ] || git -C "$repo" worktree prune
+done < <(find "${roots[@]}" -maxdepth 4 -name .git -type d -prune 2>/dev/null | sed 's|/\.git$||' | sort)
+
+if [ "$dry" = false ]; then
+  find "${roots[@]}" -maxdepth 3 -path '*/worktrees/*' -type d -empty -delete 2>/dev/null
+fi
+
+log "done: removed=$removed kept=$kept dry_run=$dry"
+if [ "$dry" = false ] && [ "$removed" -gt 0 ]; then
+  osascript -e "display notification \"Removed $removed stale worktrees, kept $kept\" with title \"worktree-sweep\"" 2>/dev/null
+fi

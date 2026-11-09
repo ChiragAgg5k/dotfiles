@@ -45,6 +45,8 @@ LINKS=(
   "claude/CLAUDE.md:.claude/CLAUDE.md"
   "claude/settings.json:.claude/settings.json"
   "bin/pr-status:.local/bin/pr-status"
+  "bin/worktree-sweep:.local/bin/worktree-sweep"
+  "config/launchd/dev.dotfiles.worktree-sweep.plist:Library/LaunchAgents/dev.dotfiles.worktree-sweep.plist"
 )
 
 # Claude Code hooks and skills are linked one by one so ~/.claude/skills can also
@@ -118,5 +120,8 @@ Next steps (one-time, not handled by this script):
   • Copy secrets template and fill it in (sourced by .zshrc, never committed):
       touch ~/.zshrc.secrets   # add per-machine API keys / tokens here
   • In Zed, set POSTHOG_AUTH_HEADER in config/zed/settings.json if you use the PostHog MCP server.
+  • Start the daily worktree sweep (the app wrapper is what macOS lets read ~/Desktop):
+      osacompile -o ~/Applications/WorktreeSweep.app -e 'do shell script "export PATH=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin; exec $HOME/.local/bin/worktree-sweep >> $HOME/Library/Logs/worktree-sweep.log 2>&1"'
+      launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.dotfiles.worktree-sweep.plist
   • Restart your shell:  exec zsh
 NEXT
