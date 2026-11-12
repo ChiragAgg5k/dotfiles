@@ -17,6 +17,8 @@
     <key>Minute</key>
     <integer>0</integer>
   </dict>
+  <key>StandardErrorPath</key>
+  <string>/Users/chiragaggarwal/Library/Logs/worktree-sweep.launchd.log</string>
   <key>LowPriorityIO</key>
   <true/>
   <key>Nice</key>

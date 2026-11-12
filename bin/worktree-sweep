@@ -54,7 +54,7 @@ while IFS= read -r repo; do
     elif printf '%s\n' "$cwds" | grep -qF "$path"; then
       reason='in use'
     elif [ $(( $(date +%s) - $(git -C "$path" log -1 --format=%ct 2>/dev/null || echo 0) )) -lt $(( idle * 86400 )) ] ||
-         [ -n "$(find "$path" -maxdepth 3 -mtime "-$idle" -not -path '*/.git*' -not -path '*/node_modules/*' -not -path '*/vendor/*' -print -quit 2>/dev/null)" ]; then
+         [ -n "$(find "$path" -maxdepth 3 -type f -mtime "-$idle" -not -path '*/.git*' -not -path '*/node_modules/*' -not -path '*/vendor/*' -print -quit 2>/dev/null)" ]; then
       reason="touched in the last $idle days"
     fi
 
