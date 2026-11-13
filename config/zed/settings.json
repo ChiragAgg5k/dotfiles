@@ -88,7 +88,7 @@
     "playwright": {
       "enabled": true,
       "command": "/Users/chiragaggarwal/.nvm/versions/node/v22.16.0/bin/playwright-mcp",
-      "args": [],
+      "args": ["--headless"],
       "env": {}
     },
     "appwrite-docs": {
