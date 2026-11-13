@@ -6,7 +6,7 @@
     ],
     "defaultMode": "auto"
   },
-  "model": "opus[1m]",
+  "model": "opus",
   "hooks": {
     "PreToolUse": [
       {
@@ -54,8 +54,7 @@
     "appwrite-experts@appwrite-claude-marketplace": true,
     "utopia-experts@appwrite-claude-marketplace": true,
     "kotlin-lsp@claude-plugins-official": true,
-    "pyright-lsp@claude-plugins-official": true,
-    "postman@claude-plugins-official": true
+    "pyright-lsp@claude-plugins-official": true
   },
   "extraKnownMarketplaces": {
     "claude-code-warp": {
