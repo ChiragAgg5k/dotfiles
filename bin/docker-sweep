@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+#
+# docker-sweep: remove Docker leftovers that nothing is using.
+#
+#   - containers exited more than --idle days ago, outside any Compose project
+#   - unattached volumes without a Compose label, older than --volume-idle days
+#   - images no container uses, built more than --idle days ago
+#   - build cache unused for --idle days
+# Compose containers and volumes are never touched: they belong to a stack
+# that may come back up. If OrbStack is stopped, the sweep skips instead of
+# starting it.
+#
+# Usage:
+#   docker-sweep [--dry-run] [--idle DAYS] [--volume-idle DAYS]
+#
+set -uo pipefail
+
+dry=false
+idle=3
+volumeIdle=14
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) dry=true ;;
+    --idle) idle="$2"; shift ;;
+    --volume-idle) volumeIdle="$2"; shift ;;
+    -h|--help) sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+log() { printf '%s %s\n' "$(date '+%F %T')" "$*"; }
+
+# Seconds since an RFC 3339 timestamp; unparseable times count as new.
+age() {
+  local time="${1%Z}"
+  time="${time%%.*}"
+  local stamp
+  stamp=$(date -j -u -f '%Y-%m-%dT%H:%M:%S' "${time:0:19}" +%s 2>/dev/null) || { echo 0; return; }
+  echo $(( $(date +%s) - stamp ))
+}
+
+if command -v orbctl >/dev/null && [ "$(orbctl status 2>/dev/null)" != 'Running' ]; then
+  log 'skip: OrbStack is not running'
+  exit 0
+fi
+if ! docker info >/dev/null 2>&1; then
+  log 'skip: Docker engine unreachable'
+  exit 0
+fi
+
+removed=0
+
+while IFS=$'\t' read -r id name project; do
+  [ -n "$project" ] && continue
+  [ "$(age "$(docker inspect -f '{{.State.FinishedAt}}' "$id")")" -lt $(( idle * 86400 )) ] && continue
+  log "remove container $name"
+  removed=$((removed + 1))
+  [ "$dry" = true ] || docker rm -v "$id" >/dev/null || log "failed container $name"
+done < <(docker ps -a --filter status=exited --filter status=dead --format '{{.ID}}\t{{.Names}}\t{{.Label "com.docker.compose.project"}}')
+
+while IFS=$'\t' read -r name created project; do
+  [ -n "$project" ] && continue
+  [ "$(age "$created")" -lt $(( volumeIdle * 86400 )) ] && continue
+  log "remove volume $name"
+  removed=$((removed + 1))
+  [ "$dry" = true ] || docker volume rm "$name" >/dev/null || log "failed volume $name"
+done < <(docker volume ls -q -f dangling=true | xargs -r docker volume inspect -f '{{.Name}}{{"\t"}}{{.CreatedAt}}{{"\t"}}{{index .Labels "com.docker.compose.project"}}')
+
+used=$(docker ps -aq | xargs -r docker inspect -f '{{.Image}}' | sort -u)
+while IFS=$'\t' read -r id reference; do
+  grep -qxF "$id" <<<"$used" && continue
+  [ "$(age "$(docker image inspect -f '{{.Created}}' "$id")")" -lt $(( idle * 86400 )) ] && continue
+  [ "$reference" = '<none>:<none>' ] && reference="$id"
+  log "remove image $reference"
+  removed=$((removed + 1))
+  [ "$dry" = true ] || docker rmi "$reference" >/dev/null || log "failed image $reference"
+done < <(docker images --no-trunc --format '{{.ID}}\t{{.Repository}}:{{.Tag}}')
+
+if [ "$dry" = true ]; then
+  log "prune build cache unused for ${idle}d"
+else
+  log "prune build cache: $(docker builder prune -f --filter "until=$(( idle * 24 ))h" 2>&1 | tail -1)"
+fi
+
+log "done: removed=$removed dry_run=$dry"
+if [ "$dry" = false ] && [ "$removed" -gt 0 ]; then
+  osascript -e "display notification \"Removed $removed unused Docker objects\" with title \"docker-sweep\"" 2>/dev/null
+fi

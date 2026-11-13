@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.dotfiles.docker-sweep</string>
+	<key>LowPriorityIO</key>
+	<true/>
+	<key>Nice</key>
+	<integer>10</integer>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>-c</string>
+		<string>exec open -g -W "$HOME/Applications/DockerSweep.app"</string>
+	</array>
+	<key>StandardErrorPath</key>
+	<string>/Users/chiragaggarwal/Library/Logs/docker-sweep.launchd.log</string>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>10</integer>
+		<key>Minute</key>
+		<integer>30</integer>
+	</dict>
+</dict>
+</plist>

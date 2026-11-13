@@ -47,6 +47,8 @@ LINKS=(
   "bin/pr-status:.local/bin/pr-status"
   "bin/worktree-sweep:.local/bin/worktree-sweep"
   "config/launchd/dev.dotfiles.worktree-sweep.plist:Library/LaunchAgents/dev.dotfiles.worktree-sweep.plist"
+  "bin/docker-sweep:.local/bin/docker-sweep"
+  "config/launchd/dev.dotfiles.docker-sweep.plist:Library/LaunchAgents/dev.dotfiles.docker-sweep.plist"
 )
 
 # Claude Code hooks and skills are linked one by one so ~/.claude/skills can also
@@ -123,5 +125,8 @@ Next steps (one-time, not handled by this script):
   • Start the daily worktree sweep (the app wrapper is what macOS lets read ~/Desktop):
       osacompile -o ~/Applications/WorktreeSweep.app -e 'do shell script "export PATH=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin; exec $HOME/.local/bin/worktree-sweep >> $HOME/Library/Logs/worktree-sweep.log 2>&1"'
       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.dotfiles.worktree-sweep.plist
+  • Start the daily Docker sweep (same wrapper, since the script lives under ~/Desktop):
+      osacompile -o ~/Applications/DockerSweep.app -e 'do shell script "export PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin; exec $HOME/.local/bin/docker-sweep >> $HOME/Library/Logs/docker-sweep.log 2>&1"'
+      launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.dotfiles.docker-sweep.plist
   • Restart your shell:  exec zsh
 NEXT
