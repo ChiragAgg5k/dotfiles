@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Continue a local Claude Code session on the agent box, inside Codeman.
+# usage: agents-move <session-id> [--force]
+#   Copies the transcript, checks out the same branch (as a Codeman worktree unless it is the
+#   default branch) and resumes the conversation there. Exit the session on this Mac first.
+#   --force moves it even when the checkout has uncommitted or unpushed work (that work stays here).
+set -euo pipefail
+
+host=${AGENTS_HOST:-ubuntu@agents-chirag}
+id=${1:?usage: agents-move <session-id> [--force]}
+force=${2:-}
+
+die() { echo "agents-move: $*" >&2; exit 1; }
+
+transcript=$(find "$HOME/.claude/projects" -maxdepth 2 -name "$id.jsonl" -print -quit)
+[ -n "$transcript" ] || die "no transcript for session $id"
+cwd=$(jq -r 'select(.cwd) | .cwd' "$transcript" | tail -1)
+[ -d "$cwd" ] || die "session directory $cwd no longer exists"
+
+top=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || die "$cwd is not a git checkout"
+sub=${cwd#"$top"}
+branch=$(git -C "$top" branch --show-current)
+[ -n "$branch" ] || die "$top is on a detached HEAD"
+default=$(git -C "$top" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
+slug=$(git -C "$top" remote get-url origin | sed -E 's#^.*github\.com[:/]##; s#\.git$##')
+
+if [ "$force" != "--force" ]; then
+    [ -z "$(git -C "$top" status --porcelain)" ] || die "$top has uncommitted changes; commit and push them, or pass --force"
+    if [ "$branch" != "$default" ]; then
+        git -C "$top" fetch -q origin "$branch" 2>/dev/null || die "branch $branch is not on origin; push it, or pass --force"
+        [ "$(git -C "$top" rev-list --count "origin/$branch..HEAD")" = 0 ] || die "$branch has unpushed commits; push them, or pass --force"
+    fi
+fi
+
+remote_dir=$(ssh "$host" bash -s -- "$slug" "$branch" "${default:-main}" <<'EOF'
+set -euo pipefail
+slug=$1 branch=$2 default=$3
+repo=$HOME/work/$slug
+[ -d "$repo/.git" ] || git clone -q --filter=blob:none "https://github.com/$slug.git" "$repo"
+codeman-link "$slug" >/dev/null
+git -C "$repo" fetch -q origin
+if [ "$branch" = "$default" ]; then
+    [ -n "$(git -C "$repo" status --porcelain)" ] || git -C "$repo" merge -q --ff-only "origin/$default" >&2 || true
+    echo "$repo"
+    exit 0
+fi
+name=$(printf '%s' "$branch" | tr -c 'A-Za-z0-9._-' '-')
+dir=$repo/.claude/worktrees/$name
+exclude=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)/info/exclude
+grep -qxF '/.claude/worktrees/' "$exclude" 2>/dev/null || echo '/.claude/worktrees/' >> "$exclude"
+if [ ! -d "$dir" ]; then
+    if git -C "$repo" show-ref -q --verify "refs/heads/$branch"; then
+        git -C "$repo" worktree add -q "$dir" "$branch" >&2
+    elif git -C "$repo" show-ref -q --verify "refs/remotes/origin/$branch"; then
+        git -C "$repo" worktree add -q --track -b "$branch" "$dir" "origin/$branch" >&2
+    else
+        git -C "$repo" worktree add -q -b "$branch" "$dir" "origin/$default" >&2
+    fi
+fi
+echo "$dir"
+EOF
+)
+target=$remote_dir$sub
+project=$(printf '%s' "$target" | tr -c 'A-Za-z0-9' '-')
+
+staging=$(mktemp -d)
+trap 'rm -r "$staging"' EXIT
+python3 - "$transcript" "$staging/$id.jsonl" "$top" "$remote_dir" "$HOME/Desktop/appwrite/" <<'EOF'
+import sys
+source, dest, top, remote, workspace = sys.argv[1:]
+text = open(source).read().replace(top, remote).replace(workspace, '/home/ubuntu/work/')
+open(dest, 'w').write(text)
+EOF
+ssh "$host" mkdir -p ".claude/projects/$project"
+scp -q "$staging/$id.jsonl" "$host:.claude/projects/$project/"
+sidecar=${transcript%.jsonl}
+[ -d "$sidecar" ] && scp -qr "$sidecar" "$host:.claude/projects/$project/"
+
+body=$(jq -nc --arg d "$target" --arg n "${slug#*/} $branch" --arg r "$id" '{workingDir:$d,mode:"claude",name:$n,resumeSessionId:$r}')
+session=$(ssh "$host" "curl -fsS -X POST localhost:3000/api/sessions -H 'content-type: application/json' -d @-" <<<"$body" | jq -r '.data.session.id // .session.id // .data.id // empty')
+[ -n "$session" ] || die "Codeman did not create the session"
+# shellcheck disable=SC2029  # $session is resolved locally on purpose
+ssh "$host" "curl -fsS -X POST localhost:3000/api/sessions/$session/interactive" >/dev/null
+
+echo "moved $id to $target"
+echo "attach: ssh -t $host tmux -L codeman attach -t codeman-${session:0:8}"
