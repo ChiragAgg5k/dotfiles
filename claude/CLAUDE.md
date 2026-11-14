@@ -106,6 +106,14 @@
 
 - Always bump version numbers (`plugin.json`, `build.gradle`, `package.json`) as part of any release or publishing workflow. Do not wait to be reminded.
 
+## Remote agent box
+
+- `agents-chirag` is my always-on Ubuntu 24.04 box (AWS eu-central-1, m8i.xlarge: 4 vCPU, 16 GB) on my Tailscale tailnet. It runs Codeman (web UI on HTTPS via `tailscale serve`), Claude Code, Codex and Docker. It is defined in `appwrite-labs/infrastructure` at `aws-production/eu-central-1/agents`, using the `aws-agent-box` module from `appwrite-labs/terraform-modules`.
+- Use it for long-running agent tasks that must survive laptop sleep, and for heavy builds or test suites. It is a separate machine: local files, worktrees and credentials are not there unless set up on the box.
+- Shell: `ssh ubuntu@agents-chirag` (Tailscale SSH, no keys). Codeman sessions are tmux sessions on socket `codeman`: `tmux -L codeman ls`, `tmux -L codeman attach -t codeman-<id>`. Start new agent sessions from the Codeman web UI so it tracks them.
+- Box layout (rules in `~/work/AGENTS.md` on the box, enforced by a clone/worktree hook): checkouts at `~/work/<org>/<repo>`, each linked as a Codeman case named after the repo (`codeman-link <org>/<repo>`); worktrees at `<repo>/.claude/worktrees/<name>`; scratch in `~/work/scratch/<topic>`. `gh` is signed in as ChiragAgg5k and commits are SSH-signed with the box's own key.
+- Change the box (size, disk, Codeman version) only through that Terraform stack and CI, never by hand in AWS. Admin fallback when Tailscale is down: SSM Session Manager.
+
 ## Projects
 
 Work repos live in `~/Desktop/appwrite/<org>/<repo>`, mirroring GitHub; worktrees go in `~/Desktop/appwrite/<org>/worktrees/<repo>/<branch>` and non-repo work files in `~/Desktop/appwrite/scratch/` (rules in `~/Desktop/appwrite/README.md`). Personal projects live in `~/Desktop/personal/<name>`. Never clone into `~/Local`. Primary ecosystem is Appwrite — backend platform, cloud hosting, edge, SDKs for 11+ languages, console, database/query libraries, and supporting infrastructure (proxy, websocket, audit, cache, framework). Most backend services are PHP 8.3+ on Swoole 6. Utopia PHP framework throughout — no Laravel/Symfony.
