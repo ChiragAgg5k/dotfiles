@@ -104,6 +104,9 @@ tilt() {
 # Go binaries installed by `go install` (GOPATH defaults to ~/go; avoids forking `go env`)
 export PATH="$PATH:${GOPATH:-$HOME/go}/bin"
 
+# gcloud SDK bin (Homebrew cask); holds gke-gcloud-auth-plugin for kubectl.
+export PATH="$PATH:/opt/homebrew/share/google-cloud-sdk/bin"
+
 # Keep PATH usable for tools that scan every entry, such as `kubectl plugin list`.
 path_cleanup_existing() {
   local cleaned=()
